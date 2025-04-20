@@ -1,0 +1,2 @@
+Trial           Group     n    N    ResponseRate
+OtherPlacebo    Placebo   3    20   0.15
