@@ -1,0 +1,440 @@
+---
+title: "PowerPrior(git)"
+author: "Yuxin"
+date: "2025-04-25"
+output: html_document
+---
+
+```{r}
+# Load required libraries
+library(rjags)
+library(coda)
+library(ggplot2)
+```
+
+```{r}
+# Define data
+# Follows Binomial distribution
+pediatric_data <- list(
+  y_placebo = 1,   # Number of responses in pediatric placebo group
+  n_placebo = 6,   # Total in pediatric placebo group
+  y_drug = 15,     # Number of responses in pediatric drug group 
+  n_drug = 30      # Total in pediatric drug group
+)
+
+adult_data <- list(
+  y_placebo = 45,  # Number of responses in adult placebo group
+  n_placebo = 494, # Total in adult placebo group
+  y_drug = 375,    # Number of responses in adult drug group
+  n_drug = 509     # Total in adult drug group
+)
+```
+
+Method 1: Implement Power Prior using RJAGS
+
+```{r}
+#------ Method 1: Implement Power Prior using RJAGS ------
+power_prior_rjags <- function(ped_data, adult_data, alpha, n_iter = 10000) {
+  # Define the JAGS model
+  model_string <- "
+  model {
+    # Likelihood for pediatric data
+    # Observed pediatric data modeled using binomial distribution
+    y_ped_placebo ~ dbin(p_placebo, n_ped_placebo)
+    y_ped_drug ~ dbin(p_drug, n_ped_drug)
+    
+    # Likelihood for adult data (weighted via power prior)
+    # Equivalent to down-weighting adult data to an effective sample size
+    # Transform adult data into Beta prior parameters (α as borrowing strength)
+    a_placebo <- 1 + alpha * y_adult_placebo
+    b_placebo <- 1 + alpha * (n_adult_placebo - y_adult_placebo)
+    
+    a_drug <- 1 + alpha * y_adult_drug
+    b_drug <- 1 + alpha * (n_adult_drug - y_adult_drug)
+    
+    # Prior distribution (Beta distribution)
+    # Use Beta priors to directly reflect the result of Power Prior construction
+    p_placebo ~ dbeta(a_placebo, b_placebo)
+    p_drug ~ dbeta(a_drug, b_drug)
+    
+    # Compute odds ratio
+    odds_ratio <- (p_drug / (1 - p_drug)) / (p_placebo / (1 - p_placebo))
+    log_odds_ratio <- log(odds_ratio)
+  }
+  "
+  
+  # Prepare JAGS data list
+  jags_data <- list(
+    y_ped_placebo = ped_data$y_placebo,
+    n_ped_placebo = ped_data$n_placebo,
+    y_ped_drug = ped_data$y_drug,
+    n_ped_drug = ped_data$n_drug,
+    y_adult_placebo = adult_data$y_placebo,
+    n_adult_placebo = adult_data$n_placebo,
+    y_adult_drug = adult_data$y_drug,
+    n_adult_drug = adult_data$n_drug,
+    alpha = alpha
+  )
+  
+  # Initialize the JAGS model
+  jags_model <- jags.model(textConnection(model_string), 
+                           data = jags_data, 
+                           n.chains = 3, 
+                           quiet = TRUE)
+  
+  # Burn-in
+  update(jags_model, 5000, progress.bar = "none")
+  
+  # Draw posterior samples
+  samples <- coda.samples(jags_model, 
+                         variable.names = c("p_placebo", "p_drug", "odds_ratio", "log_odds_ratio"), 
+                         n.iter = n_iter, 
+                         progress.bar = "none")
+  
+  # Convert to matrix for processing
+  samples_matrix <- as.matrix(samples)
+  
+  # Compute summary statistics
+  or_samples <- samples_matrix[, "odds_ratio"]
+  median_or <- median(or_samples)
+  ci_95 <- quantile(or_samples, c(0.025, 0.975))
+  prob_gt_1 <- mean(or_samples > 1)  # Probability that OR > 1
+  
+  return(list(
+    median_or = median_or,
+    ci_95 = ci_95,
+    prob_gt_1 = prob_gt_1,
+    samples = or_samples
+  ))
+}
+
+# Call this function once to output the OR estimate at a specific alpha
+```
+
+Method 2: Direct Beta-Binomial Implementation
+
+```{r}
+#------ Method 2: Direct Beta-Binomial Approach ------
+power_prior_beta <- function(ped_data, adult_data, alpha, n_samples = 10000) {
+  # Base prior parameters (same as in RJAGS method)
+  a0 <- 1
+  b0 <- 1
+  
+  # Construct the prior incorporating adult data
+  # Adult data is treated as "α-weighted pseudo sample size" and added to the original prior
+  a_placebo <- a0 + alpha * adult_data$y_placebo
+  b_placebo <- b0 + alpha * (adult_data$n_placebo - adult_data$y_placebo)
+  
+  a_drug <- a0 + alpha * adult_data$y_drug
+  b_drug <- b0 + alpha * (adult_data$n_drug - adult_data$y_drug)
+  
+  # Add pediatric data to get posterior parameters
+  a_placebo_post <- a_placebo + ped_data$y_placebo
+  b_placebo_post <- b_placebo + (ped_data$n_placebo - ped_data$y_placebo)
+  
+  a_drug_post <- a_drug + ped_data$y_drug
+  b_drug_post <- b_drug + (ped_data$n_drug - ped_data$y_drug)
+  
+  # Sample directly from the posterior distribution
+  # Simulate posterior distribution of response probabilities
+  p_placebo_samples <- rbeta(n_samples, a_placebo_post, b_placebo_post)
+  p_drug_samples <- rbeta(n_samples, a_drug_post, b_drug_post)
+  
+  # Calculate odds ratios
+  or_samples <- (p_drug_samples / (1 - p_drug_samples)) / 
+                (p_placebo_samples / (1 - p_placebo_samples))
+  
+  # Compute summary statistics
+  median_or <- median(or_samples)
+  ci_95 <- quantile(or_samples, c(0.025, 0.975))
+  prob_gt_1 <- mean(or_samples > 1)  # Probability that OR > 1
+  
+  return(list(
+    median_or = median_or,
+    ci_95 = ci_95,
+    prob_gt_1 = prob_gt_1,
+    samples = or_samples
+  ))
+}
+
+```
+
+The next two steps are just a simple comparison of the two methods to visualize the difference. The tipping point can be directly jumped to the next step for tipping point.
+
+Compare the two methods using a finer range of alpha values
+
+```{r}
+#------ Compare the two methods using a finer range of alpha values ------
+# alpha_range: the range of α values to evaluate (default is [0, 0.01])
+# steps: how many α points to test (default is 50)
+compare_methods_fine <- function(ped_data, adult_data, 
+                                alpha_range = c(0, 0.01), 
+                                steps = 50) {
+  # Create a fine alpha sequence, focused around 0.004
+  alpha_seq <- seq(alpha_range[1], alpha_range[2], length.out = steps)
+  
+  results <- data.frame()
+  
+  for (alpha in alpha_seq) {
+    # RJAGS method
+    rjags_res <- power_prior_rjags(ped_data, adult_data, alpha)
+    
+    # Beta-Binomial method
+    beta_res <- power_prior_beta(ped_data, adult_data, alpha)
+    
+    # Combine results
+    results <- rbind(results, data.frame(
+      alpha = alpha,
+      method = "RJAGS",
+      median_or = rjags_res$median_or,
+      lower_ci = rjags_res$ci_95[1],
+      upper_ci = rjags_res$ci_95[2],
+      prob_gt_1 = rjags_res$prob_gt_1
+    ))
+    
+    results <- rbind(results, data.frame(
+      alpha = alpha,
+      method = "Beta-Binomial",
+      median_or = beta_res$median_or,
+      lower_ci = beta_res$ci_95[1],
+      upper_ci = beta_res$ci_95[2],
+      prob_gt_1 = beta_res$prob_gt_1
+    ))
+  }
+  
+  return(results)
+}
+```
+
+Visualize the results
+
+```{r}
+plot_comparison_enhanced <- function(comparison_results) {
+  library(ggplot2)
+  library(gridExtra)
+  
+  # 图1：OR 中位数趋势 + CI 区域
+  p1 <- ggplot(comparison_results, aes(x = alpha, y = median_or, color = method, group = method)) +
+    geom_line(size = 1) +
+    geom_ribbon(aes(ymin = lower_ci, ymax = upper_ci, fill = method), alpha = 0.2) +
+    geom_hline(yintercept = 1, linetype = "dashed", color = "black") +
+    labs(title = "Odds Ratio (OR) vs Information Borrowing Weight (α)",
+         x = "Borrowing Weight (α)",
+         y = "Odds Ratio (OR)",
+         color = "Method",
+         fill = "Method") +
+    theme_minimal() +
+    scale_x_continuous(labels = scales::percent_format(accuracy = 0.1))
+
+  # 图2：P(OR > 1) 曲线
+  p2 <- ggplot(comparison_results, aes(x = alpha, y = prob_gt_1, color = method, group = method)) +
+    geom_line(size = 1) +
+    geom_hline(yintercept = 0.95, linetype = "dashed", color = "red") +
+    labs(title = "P(OR > 1) vs Information Borrowing Weight (α)",
+         x = "Borrowing Weight (α)",
+         y = "P(OR > 1)",
+         color = "Method") +
+    theme_minimal() +
+    scale_x_continuous(labels = scales::percent_format(accuracy = 0.1)) +
+    scale_y_continuous(labels = scales::percent_format(accuracy = 1))
+
+  # 图3：OR 误差条
+  p3 <- ggplot(comparison_results, aes(x = alpha, y = median_or, color = method)) +
+    geom_point(size = 1.2, position = position_dodge(width = 0.0005)) +
+    geom_errorbar(aes(ymin = lower_ci, ymax = upper_ci), 
+                  position = position_dodge(width = 0.0005),
+                  width = 0.0001,
+                  size = 0.5) +
+    geom_hline(yintercept = 1, linetype = "dashed", color = "red") +
+    labs(title = "Odds Ratio with 95% CrI by Method",
+         x = "Borrowing Weight (α)",
+         y = "OR and 95% CrI",
+         color = "Method") +
+    theme_minimal() +
+    scale_x_continuous(labels = scales::percent_format(accuracy = 0.1))
+
+  # 内部函数：找到下限 > 1 的 tipping point
+  find_tipping_point <- function(data) {
+    tp_idx <- which(data$lower_ci > 1)[1]
+    if (!is.na(tp_idx)) {
+      return(data$alpha[tp_idx])
+    } else {
+      return(NA)
+    }
+  }
+
+  # 提取方法结果
+  rjags_data <- subset(comparison_results, method == "RJAGS")
+  beta_data <- subset(comparison_results, method == "Beta-Binomial")
+  rjags_tipping <- find_tipping_point(rjags_data)
+  beta_tipping <- find_tipping_point(beta_data)
+
+  # 在 p2 和 p3 上分别添加 RJAGS tipping point 标注
+  if (!is.na(rjags_tipping)) {
+    p2 <- p2 + geom_vline(xintercept = rjags_tipping, linetype = "dotted", color = "blue", size = 1) +
+      annotate("text", x = rjags_tipping * 1.1, y = 0.9, 
+               label = paste("RJAGS TP:\n", scales::percent(rjags_tipping, accuracy = 0.001)), 
+               color = "blue", hjust = 0, vjust = 0)
+    p3 <- p3 + geom_vline(xintercept = rjags_tipping, linetype = "dotted", color = "blue", size = 1) +
+      annotate("text", x = rjags_tipping * 1.1, y = Inf, 
+               label = paste("RJAGS TP:\n", scales::percent(rjags_tipping, accuracy = 0.001)), 
+               color = "blue", hjust = 0, vjust = 2)
+  }
+
+  # 同理：Beta-Binomial
+  if (!is.na(beta_tipping)) {
+    p2 <- p2 + geom_vline(xintercept = beta_tipping, linetype = "dotted", color = "red", size = 1) +
+      annotate("text", x = beta_tipping * 1.1, y = 0.85, 
+               label = paste("Beta-Binomial TP:\n", scales::percent(beta_tipping, accuracy = 0.001)), 
+               color = "red", hjust = 0, vjust = 0)
+    p3 <- p3 + geom_vline(xintercept = beta_tipping, linetype = "dotted", color = "red", size = 1) +
+      annotate("text", x = beta_tipping * 1.1, y = Inf, 
+               label = paste("Beta-Binomial TP:\n", scales::percent(beta_tipping, accuracy = 0.001)), 
+               color = "red", hjust = 0, vjust = 3)
+  }
+
+  # 输出三张图
+  grid.arrange(p1, p2, p3, nrow = 3)
+
+  return(list(
+    rjags_tipping = rjags_tipping,
+    beta_tipping = beta_tipping,
+    plots = list(p1 = p1, p2 = p2, p3 = p3)
+  ))
+}
+
+```
+Within a specific range of α, compare the results of the two Power Prior methods, RJAGS and Beta-Binomial, on OR inference, find the tipping point of each method (the minimum α that makes the 95% lower limit of OR > 1), and visualize the results.
+
+
+Tipping point detection and visualization!!
+
+```{r}
+#------ Power Prior: Tipping Point Analysis ------
+# Analyze, compare, and visualize Power Prior (RJAGS & Beta-Binomial) across a range of α values,
+# and identify tipping points where the lower bound of the 95% CrI for OR exceeds 1.
+
+tipping_point_analysis <- function(ped_data, adult_data, method = "both",
+                                  alpha_min = 0.001, alpha_max = 0.01, steps = 100) {
+  alpha_seq <- seq(alpha_min, alpha_max, length.out = steps)
+  results <- data.frame()
+  
+  for (alpha in alpha_seq) {
+    if (method %in% c("both", "RJAGS")) {
+      rjags_res <- power_prior_rjags(ped_data, adult_data, alpha)
+      results <- rbind(results, data.frame(
+        alpha = alpha,
+        method = "RJAGS",
+        median_or = rjags_res$median_or,
+        lower_ci = rjags_res$ci_95[1],
+        upper_ci = rjags_res$ci_95[2],
+        prob_gt_1 = rjags_res$prob_gt_1
+      ))
+    }
+    
+    if (method %in% c("both", "Beta-Binomial")) {
+      beta_res <- power_prior_beta(ped_data, adult_data, alpha)
+      results <- rbind(results, data.frame(
+        alpha = alpha,
+        method = "Beta-Binomial",
+        median_or = beta_res$median_or,
+        lower_ci = beta_res$ci_95[1],
+        upper_ci = beta_res$ci_95[2],
+        prob_gt_1 = beta_res$prob_gt_1
+      ))
+    }
+  }
+  
+  # Identify tipping points (first alpha where 95% CrI lower bound > 1)
+  if ("RJAGS" %in% unique(results$method)) {
+    rjags_data <- subset(results, method == "RJAGS")
+    rjags_tp_idx <- which(rjags_data$lower_ci > 1)[1]
+    rjags_tipping <- ifelse(is.na(rjags_tp_idx), NA, rjags_data$alpha[rjags_tp_idx])
+    cat("RJAGS Tipping Point (OR lower bound > 1):", ifelse(is.na(rjags_tipping), "Not Found", 
+                                              paste0(scales::percent(rjags_tipping, accuracy = 0.001))), "\n")
+  }
+  
+  if ("Beta-Binomial" %in% unique(results$method)) {
+    beta_data <- subset(results, method == "Beta-Binomial")
+    beta_tp_idx <- which(beta_data$lower_ci > 1)[1]
+    beta_tipping <- ifelse(is.na(beta_tp_idx), NA, beta_data$alpha[beta_tp_idx])
+    cat("Beta-Binomial Tipping Point (OR lower bound > 1):", ifelse(is.na(beta_tipping), "Not Found", 
+                                                     paste0(scales::percent(beta_tipping, accuracy = 0.001))), "\n")
+  }
+  
+  # Create visualization
+  p <- ggplot(results, aes(x = alpha, color = method, group = method)) +
+    geom_line(aes(y = median_or), size = 1) +
+    geom_ribbon(aes(ymin = lower_ci, ymax = upper_ci, fill = method), alpha = 0.2) +
+    geom_hline(yintercept = 1, linetype = "dashed", color = "black") +
+    labs(title = "Tipping Point Analysis: Borrowing Weight vs OR",
+         subtitle = "Showing 95% Credible Intervals",
+         x = "Borrowing Weight (α)",
+         y = "Odds Ratio (OR)",
+         color = "Method",
+         fill = "Method") +
+    theme_minimal() +
+    scale_x_continuous(labels = scales::percent_format(accuracy = 0.001))
+  
+  # Annotate tipping points on plot if available
+  if (exists("rjags_tipping") && !is.na(rjags_tipping)) {
+    p <- p + geom_vline(xintercept = rjags_tipping, linetype = "dotted", 
+                       color = "blue", size = 1)
+  }
+  
+  if (exists("beta_tipping") && !is.na(beta_tipping)) {
+    p <- p + geom_vline(xintercept = beta_tipping, linetype = "dotted", 
+                       color = "red", size = 1)
+  }
+  
+  return(list(
+    results = results,
+    plot = p,
+    rjags_tipping = if (exists("rjags_tipping")) rjags_tipping else NA,
+    beta_tipping = if (exists("beta_tipping")) beta_tipping else NA
+  ))
+}
+
+```
+
+Now we can see the result
+
+```{r}
+# Perform a fine-grained comparison, focusing on α values between 0% and 1%
+results_fine <- compare_methods_fine(pediatric_data, adult_data, 
+                                     alpha_range = c(0, 0.01), 
+                                     steps = 50)
+```
+
+```{r}
+# Visualize the results
+# Note: The difference in results arises from different alpha search ranges and steps.
+# The function plot_comparison_enhanced() relies on the output of compare_methods_fine.
+plot_results <- plot_comparison_enhanced(results_fine)
+```
+
+The OR estimation results of the two methods are very close in the entire α range, and the fitting trends are highly consistent;
+
+The ORs are all much higher than 1, indicating that no matter how much information is borrowed, the treatment seems to be significantly better than the control in children;
+
+When the information borrowing ratio α reaches about 0.612%, the posterior 95% CrI lower limit of the two methods is > 1, → marked as the tipping point of each method;
+
+```{r}
+# More fine-grained tipping point analysis, focusing on the range between 0.1% and 0.8%
+tp_analysis <- tipping_point_analysis(pediatric_data, adult_data, 
+                                      alpha_min = 0.001, 
+                                      alpha_max = 0.008, 
+                                      steps = 70)
+print(tp_analysis$plot)
+```
+
+```{r}
+# Output the exact tipping point values (displayed as percentages)
+cat("\n--- Tipping Point Values (Information Borrowing Weight) ---\n")
+cat("RJAGS Method:", ifelse(is.na(tp_analysis$rjags_tipping), "Not found", 
+                      paste0(scales::percent(tp_analysis$rjags_tipping, accuracy = 0.001))), "\n")
+cat("Beta-Binomial Method:", ifelse(is.na(tp_analysis$beta_tipping), "Not found", 
+                             paste0(scales::percent(tp_analysis$beta_tipping, accuracy = 0.001))), "\n")
+
+```
+
