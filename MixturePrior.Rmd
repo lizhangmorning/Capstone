@@ -1,0 +1,169 @@
+---
+title: "MixturePrior"
+output: html_document
+date: "2025-04-23"
+---
+
+```{r}
+library(ggplot2)
+library(gridExtra)
+set.seed(123)
+
+# Adult data
+adult_drugA_x = 375
+adult_drugA_n = 509
+adult_placebo_x = 45
+adult_placebo_n = 494
+
+# Pediatric data
+pediatric_drugA_x = 15
+pediatric_drugA_n = 30
+pediatric_placebo_x = 1
+pediatric_placebo_n = 6
+
+# Step 1: Adult log(OR) and SE
+logor_adult = log( (adult_drugA_x/(adult_drugA_n - adult_drugA_x)) / (adult_placebo_x/(adult_placebo_n - adult_placebo_x)) )
+se_adult = sqrt( 1/adult_drugA_x + 1/(adult_drugA_n - adult_drugA_x) + 1/adult_placebo_x + 1/(adult_placebo_n - adult_placebo_x) )
+var_adult = se_adult^2
+
+# Step 2: Pediatric log(OR) and SE
+logor_ped = log( (pediatric_drugA_x/(pediatric_drugA_n - pediatric_drugA_x)) / (pediatric_placebo_x/(pediatric_placebo_n - pediatric_placebo_x)) )
+se_ped = sqrt( 1/pediatric_drugA_x + 1/(pediatric_drugA_n - pediatric_drugA_x) + 1/pediatric_placebo_x + 1/(pediatric_placebo_n - pediatric_placebo_x) )
+var_ped = se_ped^2
+
+# Step 3: Skeptical prior variance
+n_pediatric = pediatric_drugA_n + pediatric_placebo_n
+var_per_subject = var_ped * (n_pediatric / 2)
+skeptical_mu = 0
+skeptical_var = var_per_subject
+
+# Step 4: Define adult prior weight sequence
+a_seq = seq(0, 1, by = 0.02)
+
+# Step 5: Storage
+n_samples = 5000
+results = data.frame(
+  a = a_seq,
+  OR_median = numeric(length(a_seq)),
+  OR_low = numeric(length(a_seq)),
+  OR_high = numeric(length(a_seq)),
+  ESS = numeric(length(a_seq))
+)
+
+# Step 6: Pediatric-only posterior variance (for ESS baseline)
+skeptical_mu_vague = 0
+skeptical_var_vague = 1e6  
+
+var_post_ped_only = 1 / (1/skeptical_var_vague + 1/var_ped)
+mu_post_ped_only = var_post_ped_only * (skeptical_mu_vague/skeptical_var_vague + logor_ped/var_ped)
+ped_only_samples = rnorm(n_samples, mean = mu_post_ped_only, sd = sqrt(var_post_ped_only))
+var_no_prior = var(ped_only_samples)
+
+# Step 7: Functions
+
+update_posterior_component <- function(mu_prior, var_prior, mu_lik, var_lik) {
+  var_post = 1 / (1/var_prior + 1/var_lik)
+  mu_post = var_post * (mu_prior/var_prior + mu_lik/var_lik)
+  return(list(mu = mu_post, var = var_post))
+}
+
+compute_Cj <- function(mu_prior, var_prior, mu_lik, var_lik) {
+  var_sum = var_prior + var_lik
+  dnorm(mu_lik, mean = mu_prior, sd = sqrt(var_sum))
+}
+
+# Step 8: Loop over each weight
+for (i in seq_along(a_seq)) {
+  a = a_seq[i]
+  
+  # Prior settings
+  k0 = c(a, 1 - a)  # (adult prior weight, skeptical prior weight)
+  
+  priors = list(
+    list(mu = logor_adult, var = var_adult),
+    list(mu = skeptical_mu, var = skeptical_var)
+  )
+  
+  # Update each posterior component and compute Cj
+  posterior_components = list()
+  Cj = numeric(length(priors))
+  
+  for (j in 1:length(priors)) {
+    prior = priors[[j]]
+    posterior_components[[j]] = update_posterior_component(prior$mu, prior$var, logor_ped, var_ped)
+    Cj[j] = compute_Cj(prior$mu, prior$var, logor_ped, var_ped)
+  }
+  
+  # Update weights
+  k1 = k0 * Cj
+  k1 = k1 / sum(k1)
+  
+  # Mixture posterior sampling
+  samples_logor = numeric(n_samples)
+  
+  for (s in 1:n_samples) {
+    component = sample(1:2, size=1, prob=k1)
+    samples_logor[s] = rnorm(1, mean = posterior_components[[component]]$mu, sd = sqrt(posterior_components[[component]]$var))
+  }
+  
+  samples_or = exp(samples_logor)
+  
+  # Save results
+  results$OR_median[i] = median(samples_or)
+  results$OR_low[i] = quantile(samples_or, 0.025)
+  results$OR_high[i] = quantile(samples_or, 0.975)
+  
+  # ESS calculation
+  var_with_prior = var(samples_logor)
+  results$ESS[i] = n_pediatric * (var_no_prior / var_with_prior - 1)
+}
+
+#  Tipping Point
+tipping_point = results[which(results$OR_low > 1)[1], ]
+
+if (!is.na(tipping_point$a)) {
+  ess_at_tipping = results$ESS[which(results$a == tipping_point$a)]
+  
+  cat("Tipping Point Found!\n")
+  cat("Adult Prior Weight (a):", tipping_point$a, "\n")
+  cat("Posterior OR Median:", round(tipping_point$OR_median, 2), "\n")
+  cat("95% CI: (", round(tipping_point$OR_low, 2), ",", round(tipping_point$OR_high, 2), ")\n")
+  cat("Tipping Point ESS:", round(ess_at_tipping, 1), "pediatric patients\n")
+} else {
+  cat("No tipping point found within a ∈ [0,1].\n")
+}
+
+# Step 10: Plot
+
+p1 <- ggplot(results, aes(x = a)) +
+  geom_line(aes(y = OR_median), color = "blue", size = 1) +
+  geom_ribbon(aes(ymin = OR_low, ymax = OR_high), fill = "skyblue", alpha = 0.3) +
+  geom_hline(yintercept = 1, linetype = "dashed", color = "red") +
+  geom_vline(xintercept = tipping_point$a, linetype = "dashed", color = "darkred") +
+  annotate("text", x = tipping_point$a, y = max(results$OR_high)*0.9,
+           label = paste0("Tipping Point\n(a = ", tipping_point$a, ")"),
+           color = "darkred", angle = 90, vjust = -0.5) +
+  labs(
+    title = "Odds Ratio vs Adult Prior Weight ",
+    x = "Adult Prior Weight (a)",
+    y = "Posterior Odds Ratio"
+  ) +
+  theme_minimal()
+
+p2 <- ggplot(results, aes(x = a, y = ESS)) +
+  geom_line(color = "darkgreen", size = 1) +
+  geom_point(color = "darkgreen") +
+  geom_vline(xintercept = tipping_point$a, linetype = "dashed", color = "darkred") +
+  annotate("text", x = tipping_point$a, y = max(results$ESS)*0.9,
+           label = paste0("ESS = ", round(ess_at_tipping, 1)),
+           color = "darkred", angle = 90, vjust = -0.5) +
+  labs(
+    title = "ESS vs Adult Prior Weight",
+    x = "Adult Prior Weight (a)",
+    y = "Effective Sample Size (ESS)"
+  ) +
+  theme_minimal()
+
+grid.arrange(p1, p2, ncol = 2)
+
+```
