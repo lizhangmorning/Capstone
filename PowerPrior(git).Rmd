@@ -9,6 +9,7 @@ output: html_document
 # Load required libraries
 library(rjags)
 library(coda)
+library(dplyr)
 library(ggplot2)
 ```
 
@@ -31,6 +32,8 @@ adult_data <- list(
 ```
 
 Method 1: Implement Power Prior using RJAGS
+
+The pediatric data are modeled with a binomial likelihood, and the adult data, weighted through the power prior, form a Beta prior to jointly infer the posterior of p.
 
 ```{r}
 #------ Method 1: Implement Power Prior using RJAGS ------
@@ -159,153 +162,6 @@ power_prior_beta <- function(ped_data, adult_data, alpha, n_samples = 10000) {
 
 ```
 
-The next two steps are just a simple comparison of the two methods to visualize the difference. The tipping point can be directly jumped to the next step for tipping point.
-
-Compare the two methods using a finer range of alpha values
-
-```{r}
-#------ Compare the two methods using a finer range of alpha values ------
-# alpha_range: the range of α values to evaluate (default is [0, 0.01])
-# steps: how many α points to test (default is 50)
-compare_methods_fine <- function(ped_data, adult_data, 
-                                alpha_range = c(0, 0.01), 
-                                steps = 50) {
-  # Create a fine alpha sequence, focused around 0.004
-  alpha_seq <- seq(alpha_range[1], alpha_range[2], length.out = steps)
-  
-  results <- data.frame()
-  
-  for (alpha in alpha_seq) {
-    # RJAGS method
-    rjags_res <- power_prior_rjags(ped_data, adult_data, alpha)
-    
-    # Beta-Binomial method
-    beta_res <- power_prior_beta(ped_data, adult_data, alpha)
-    
-    # Combine results
-    results <- rbind(results, data.frame(
-      alpha = alpha,
-      method = "RJAGS",
-      median_or = rjags_res$median_or,
-      lower_ci = rjags_res$ci_95[1],
-      upper_ci = rjags_res$ci_95[2],
-      prob_gt_1 = rjags_res$prob_gt_1
-    ))
-    
-    results <- rbind(results, data.frame(
-      alpha = alpha,
-      method = "Beta-Binomial",
-      median_or = beta_res$median_or,
-      lower_ci = beta_res$ci_95[1],
-      upper_ci = beta_res$ci_95[2],
-      prob_gt_1 = beta_res$prob_gt_1
-    ))
-  }
-  
-  return(results)
-}
-```
-
-Visualize the results
-
-```{r}
-plot_comparison_enhanced <- function(comparison_results) {
-  library(ggplot2)
-  library(gridExtra)
-  
-  # 图1：OR 中位数趋势 + CI 区域
-  p1 <- ggplot(comparison_results, aes(x = alpha, y = median_or, color = method, group = method)) +
-    geom_line(size = 1) +
-    geom_ribbon(aes(ymin = lower_ci, ymax = upper_ci, fill = method), alpha = 0.2) +
-    geom_hline(yintercept = 1, linetype = "dashed", color = "black") +
-    labs(title = "Odds Ratio (OR) vs Information Borrowing Weight (α)",
-         x = "Borrowing Weight (α)",
-         y = "Odds Ratio (OR)",
-         color = "Method",
-         fill = "Method") +
-    theme_minimal() +
-    scale_x_continuous(labels = scales::percent_format(accuracy = 0.1))
-
-  # 图2：P(OR > 1) 曲线
-  p2 <- ggplot(comparison_results, aes(x = alpha, y = prob_gt_1, color = method, group = method)) +
-    geom_line(size = 1) +
-    geom_hline(yintercept = 0.95, linetype = "dashed", color = "red") +
-    labs(title = "P(OR > 1) vs Information Borrowing Weight (α)",
-         x = "Borrowing Weight (α)",
-         y = "P(OR > 1)",
-         color = "Method") +
-    theme_minimal() +
-    scale_x_continuous(labels = scales::percent_format(accuracy = 0.1)) +
-    scale_y_continuous(labels = scales::percent_format(accuracy = 1))
-
-  # 图3：OR 误差条
-  p3 <- ggplot(comparison_results, aes(x = alpha, y = median_or, color = method)) +
-    geom_point(size = 1.2, position = position_dodge(width = 0.0005)) +
-    geom_errorbar(aes(ymin = lower_ci, ymax = upper_ci), 
-                  position = position_dodge(width = 0.0005),
-                  width = 0.0001,
-                  size = 0.5) +
-    geom_hline(yintercept = 1, linetype = "dashed", color = "red") +
-    labs(title = "Odds Ratio with 95% CrI by Method",
-         x = "Borrowing Weight (α)",
-         y = "OR and 95% CrI",
-         color = "Method") +
-    theme_minimal() +
-    scale_x_continuous(labels = scales::percent_format(accuracy = 0.1))
-
-  # 内部函数：找到下限 > 1 的 tipping point
-  find_tipping_point <- function(data) {
-    tp_idx <- which(data$lower_ci > 1)[1]
-    if (!is.na(tp_idx)) {
-      return(data$alpha[tp_idx])
-    } else {
-      return(NA)
-    }
-  }
-
-  # 提取方法结果
-  rjags_data <- subset(comparison_results, method == "RJAGS")
-  beta_data <- subset(comparison_results, method == "Beta-Binomial")
-  rjags_tipping <- find_tipping_point(rjags_data)
-  beta_tipping <- find_tipping_point(beta_data)
-
-  # 在 p2 和 p3 上分别添加 RJAGS tipping point 标注
-  if (!is.na(rjags_tipping)) {
-    p2 <- p2 + geom_vline(xintercept = rjags_tipping, linetype = "dotted", color = "blue", size = 1) +
-      annotate("text", x = rjags_tipping * 1.1, y = 0.9, 
-               label = paste("RJAGS TP:\n", scales::percent(rjags_tipping, accuracy = 0.001)), 
-               color = "blue", hjust = 0, vjust = 0)
-    p3 <- p3 + geom_vline(xintercept = rjags_tipping, linetype = "dotted", color = "blue", size = 1) +
-      annotate("text", x = rjags_tipping * 1.1, y = Inf, 
-               label = paste("RJAGS TP:\n", scales::percent(rjags_tipping, accuracy = 0.001)), 
-               color = "blue", hjust = 0, vjust = 2)
-  }
-
-  # 同理：Beta-Binomial
-  if (!is.na(beta_tipping)) {
-    p2 <- p2 + geom_vline(xintercept = beta_tipping, linetype = "dotted", color = "red", size = 1) +
-      annotate("text", x = beta_tipping * 1.1, y = 0.85, 
-               label = paste("Beta-Binomial TP:\n", scales::percent(beta_tipping, accuracy = 0.001)), 
-               color = "red", hjust = 0, vjust = 0)
-    p3 <- p3 + geom_vline(xintercept = beta_tipping, linetype = "dotted", color = "red", size = 1) +
-      annotate("text", x = beta_tipping * 1.1, y = Inf, 
-               label = paste("Beta-Binomial TP:\n", scales::percent(beta_tipping, accuracy = 0.001)), 
-               color = "red", hjust = 0, vjust = 3)
-  }
-
-  # 输出三张图
-  grid.arrange(p1, p2, p3, nrow = 3)
-
-  return(list(
-    rjags_tipping = rjags_tipping,
-    beta_tipping = beta_tipping,
-    plots = list(p1 = p1, p2 = p2, p3 = p3)
-  ))
-}
-
-```
-Within a specific range of α, compare the results of the two Power Prior methods, RJAGS and Beta-Binomial, on OR inference, find the tipping point of each method (the minimum α that makes the 95% lower limit of OR > 1), and visualize the results.
-
 
 Tipping point detection and visualization!!
 
@@ -397,27 +253,6 @@ tipping_point_analysis <- function(ped_data, adult_data, method = "both",
 
 ```
 
-Now we can see the result
-
-```{r}
-# Perform a fine-grained comparison, focusing on α values between 0% and 1%
-results_fine <- compare_methods_fine(pediatric_data, adult_data, 
-                                     alpha_range = c(0, 0.01), 
-                                     steps = 50)
-```
-
-```{r}
-# Visualize the results
-# Note: The difference in results arises from different alpha search ranges and steps.
-# The function plot_comparison_enhanced() relies on the output of compare_methods_fine.
-plot_results <- plot_comparison_enhanced(results_fine)
-```
-
-The OR estimation results of the two methods are very close in the entire α range, and the fitting trends are highly consistent;
-
-The ORs are all much higher than 1, indicating that no matter how much information is borrowed, the treatment seems to be significantly better than the control in children;
-
-When the information borrowing ratio α reaches about 0.612%, the posterior 95% CrI lower limit of the two methods is > 1, → marked as the tipping point of each method;
 
 ```{r}
 # More fine-grained tipping point analysis, focusing on the range between 0.1% and 0.8%
@@ -438,3 +273,145 @@ cat("Beta-Binomial Method:", ifelse(is.na(tp_analysis$beta_tipping), "Not found"
 
 ```
 
+Calculate Effective Sample Size (ESS)
+
+```{r}
+# Method 1: ESS for Beta-Binomial method
+evaluate_ess_beta <- function(ped_data, adult_data, alpha) {
+  # For Beta-Binomial model, ESS = alpha * historical sample size
+  ess_treat <- alpha * adult_data$n_drug
+  ess_placebo <- alpha * adult_data$n_placebo
+  ess_total <- ess_treat + ess_placebo
+  
+  ess_ratio_treat <- ess_treat / ped_data$n_drug
+  ess_ratio_placebo <- ess_placebo / ped_data$n_placebo
+  ess_ratio_total <- ess_total / (ped_data$n_drug + ped_data$n_placebo)
+  
+  return(list(
+    ess_treat = ess_treat,
+    ess_placebo = ess_placebo,
+    ess_total = ess_total,
+    ess_ratio_treat = ess_ratio_treat,
+    ess_ratio_placebo = ess_ratio_placebo,
+    ess_ratio_total = ess_ratio_total
+  ))
+}
+```
+
+```{r}
+# Method 2: ESS for RJAGS method (same calculation logic, because adult info is down-weighted by alpha)
+evaluate_ess_rjags <- function(ped_data, adult_data, alpha) {
+  # In RJAGS with power prior, effective contribution is also alpha * sample size
+  ess_treat <- alpha * adult_data$n_drug
+  ess_placebo <- alpha * adult_data$n_placebo
+  ess_total <- ess_treat + ess_placebo
+  
+  ess_ratio_treat <- ess_treat / ped_data$n_drug
+  ess_ratio_placebo <- ess_placebo / ped_data$n_placebo
+  ess_ratio_total <- ess_total / (ped_data$n_drug + ped_data$n_placebo)
+  
+  return(list(
+    ess_treat = ess_treat,
+    ess_placebo = ess_placebo,
+    ess_total = ess_total,
+    ess_ratio_treat = ess_ratio_treat,
+    ess_ratio_placebo = ess_ratio_placebo,
+    ess_ratio_total = ess_ratio_total
+  ))
+}
+```
+
+```{r}
+#------ Summarize ESS at Tipping Point ------
+
+# Assuming tipping point results already available from previous analysis
+tp_rjags_alpha <- tp_analysis$rjags_tipping
+tp_beta_alpha <- tp_analysis$beta_tipping
+
+# Calculate ESS at RJAGS tipping point
+if (!is.na(tp_rjags_alpha)) {
+  ess_rjags <- evaluate_ess_rjags(pediatric_data, adult_data, tp_rjags_alpha)
+  cat("\n--- ESS at RJAGS Tipping Point (", scales::percent(tp_rjags_alpha, accuracy = 0.001), ") ---\n")
+  cat("Treatment ESS:", round(ess_rjags$ess_treat, 2), "\n")
+  cat("Placebo ESS:", round(ess_rjags$ess_placebo, 2), "\n")
+  cat("Total ESS:", round(ess_rjags$ess_total, 2), "\n")
+  cat("ESS to pediatric sample size ratio:", round(ess_rjags$ess_ratio_total, 3), "\n")
+}
+
+# Calculate ESS at Beta-Binomial tipping point
+if (!is.na(tp_beta_alpha)) {
+  ess_beta <- evaluate_ess_beta(pediatric_data, adult_data, tp_beta_alpha)
+  cat("\n--- ESS at Beta-Binomial Tipping Point (", scales::percent(tp_beta_alpha, accuracy = 0.001), ") ---\n")
+  cat("Treatment ESS:", round(ess_beta$ess_treat, 2), "\n")
+  cat("Placebo ESS:", round(ess_beta$ess_placebo, 2), "\n")
+  cat("Total ESS:", round(ess_beta$ess_total, 2), "\n")
+  cat("ESS to pediatric sample size ratio:", round(ess_beta$ess_ratio_total, 3), "\n")
+}
+```
+plot how the Effective Sample Size (ESS) changes with α for the RJAGS and Beta-Binomial.
+
+```{r}
+# Create ESS calculation function
+calculate_ess <- function(ped_data, adult_data, alpha) {
+  ess_treat <- alpha * adult_data$n_drug
+  ess_placebo <- alpha * adult_data$n_placebo
+  ess_total <- ess_treat + ess_placebo
+  ess_ratio_total <- ess_total / (ped_data$n_drug + ped_data$n_placebo)
+  
+  return(list(
+    ess_treat = ess_treat,
+    ess_placebo = ess_placebo,
+    ess_total = ess_total,
+    ess_ratio_total = ess_ratio_total
+  ))
+}
+
+# Add ESS calculation to the tipping point results
+tp_results_with_ess <- tp_analysis$results %>%
+  mutate(
+    ess_treat = alpha * adult_data$n_drug,
+    ess_placebo = alpha * adult_data$n_placebo,
+    ess_total = ess_treat + ess_placebo,
+    ess_ratio_total = ess_total / (pediatric_data$n_drug + pediatric_data$n_placebo)
+  )
+
+# Separate RJAGS and Beta-Binomial results
+rjags_ess <- tp_results_with_ess %>% filter(method == "RJAGS")
+beta_ess <- tp_results_with_ess %>% filter(method == "Beta-Binomial")
+
+# Plot for RJAGS
+ess_plot_rjags <- ggplot(rjags_ess, aes(x = alpha)) +
+  geom_area(aes(y = ess_total), fill = "lightblue", alpha = 0.4) +
+  geom_line(aes(y = ess_treat), color = "red", size = 1, linetype = "solid") +
+  geom_line(aes(y = ess_placebo), color = "darkgreen", size = 1, linetype = "dashed") +
+  {if (!is.na(tp_analysis$rjags_tipping))
+    geom_vline(xintercept = tp_analysis$rjags_tipping, color = "blue", linetype = "dotted", size = 1)} +
+  labs(title = "Effective Sample Size Components (RJAGS Method)",
+       x = "Borrowing Weight (α)",
+       y = "Effective Sample Size",
+       fill = "",
+       color = "") +
+  theme_minimal() +
+  scale_x_continuous(labels = scales::percent_format(accuracy = 0.1)) +
+  theme(legend.position = "bottom")
+
+# Plot for Beta-Binomial
+ess_plot_beta <- ggplot(beta_ess, aes(x = alpha)) +
+  geom_area(aes(y = ess_total), fill = "lightpink", alpha = 0.4) +
+  geom_line(aes(y = ess_treat), color = "red", size = 1, linetype = "solid") +
+  geom_line(aes(y = ess_placebo), color = "darkgreen", size = 1, linetype = "dashed") +
+  {if (!is.na(tp_analysis$beta_tipping))
+    geom_vline(xintercept = tp_analysis$beta_tipping, color = "red", linetype = "dotted", size = 1)} +
+  labs(title = "Effective Sample Size Components (Beta-Binomial Method)",
+       x = "Borrowing Weight (α)",
+       y = "Effective Sample Size",
+       fill = "",
+       color = "") +
+  theme_minimal() +
+  scale_x_continuous(labels = scales::percent_format(accuracy = 0.1)) +
+  theme(legend.position = "bottom")
+
+# Print the two plots separately
+print(ess_plot_rjags)
+print(ess_plot_beta)
+```
