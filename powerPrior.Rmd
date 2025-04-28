@@ -295,34 +295,34 @@ calculate_ess_beta <- function(ped_data, adult_data, delta) {
   return(results)
 }
 
-# 方法2：基于信息矩阵的ESS计算（更通用的方法）
-calculate_ess_information <- function(ped_data, adult_data, delta) {
-  # 计算Fisher信息
-  
-  # 治疗组
-  p_treat_adult <- adult_data$y_drug / adult_data$n_drug
-  info_treat_adult <- adult_data$n_drug / (p_treat_adult * (1 - p_treat_adult))
-  
-  p_treat_ped <- ped_data$y_drug / ped_data$n_drug
-  info_treat_ped <- ped_data$n_drug / (p_treat_ped * (1 - p_treat_ped))
-  
-  # 对照组
-  p_placebo_adult <- adult_data$y_placebo / adult_data$n_placebo
-  info_placebo_adult <- adult_data$n_placebo / (p_placebo_adult * (1 - p_placebo_adult))
-  
-  p_placebo_ped <- ped_data$y_placebo / ped_data$n_placebo
-  info_placebo_ped <- ped_data$n_placebo / (p_placebo_ped * (1 - p_placebo_ped))
-  
-  # 基于信息的ESS
-  ess_treat_info <- delta * info_treat_adult * (p_treat_ped * (1 - p_treat_ped))
-  ess_placebo_info <- delta * info_placebo_adult * (p_placebo_ped * (1 - p_placebo_ped))
-  
-  return(list(
-    ess_treat_info = ess_treat_info,
-    ess_placebo_info = ess_placebo_info,
-    ess_total_info = ess_treat_info + ess_placebo_info
-  ))
-}
+# # 方法2：基于信息矩阵的ESS计算（更通用的方法）
+# calculate_ess_information <- function(ped_data, adult_data, delta) {
+#   # 计算Fisher信息
+#   
+#   # 治疗组
+#   p_treat_adult <- adult_data$y_drug / adult_data$n_drug
+#   info_treat_adult <- adult_data$n_drug / (p_treat_adult * (1 - p_treat_adult))
+#   
+#   p_treat_ped <- ped_data$y_drug / ped_data$n_drug
+#   info_treat_ped <- ped_data$n_drug / (p_treat_ped * (1 - p_treat_ped))
+#   
+#   # 对照组
+#   p_placebo_adult <- adult_data$y_placebo / adult_data$n_placebo
+#   info_placebo_adult <- adult_data$n_placebo / (p_placebo_adult * (1 - p_placebo_adult))
+#   
+#   p_placebo_ped <- ped_data$y_placebo / ped_data$n_placebo
+#   info_placebo_ped <- ped_data$n_placebo / (p_placebo_ped * (1 - p_placebo_ped))
+#   
+#   # 基于信息的ESS
+#   ess_treat_info <- delta * info_treat_adult * (p_treat_ped * (1 - p_treat_ped))
+#   ess_placebo_info <- delta * info_placebo_adult * (p_placebo_ped * (1 - p_placebo_ped))
+#   
+#   return(list(
+#     ess_treat_info = ess_treat_info,
+#     ess_placebo_info = ess_placebo_info,
+#     ess_total_info = ess_treat_info + ess_placebo_info
+#   ))
+# }
 
 # 扩展的tipping point分析函数，包含ESS计算
 tipping_analysis_with_ess <- function(ped_data, adult_data, 
@@ -353,38 +353,38 @@ tipping_value <- attr(results_with_ess, "tipping_point")
 library(ggplot2)
 library(gridExtra)
 
-# 图1: OR与ESS的双轴图
-p1 <- ggplot(results_with_ess, aes(x = delta)) +
-  geom_line(aes(y = OR_median, color = "Odds Ratio"), size = 1) +
-  geom_ribbon(aes(ymin = OR_lower, ymax = OR_upper), alpha = 0.2, fill = "blue") +
-  geom_line(aes(y = ess_total/100, color = "ESS/100"), size = 1) +
-  geom_hline(yintercept = 1, linetype = "dashed", color = "red") +
-  {if(!is.na(tipping_value)) 
-    geom_vline(xintercept = tipping_value, linetype = "dotted", color = "darkblue", size = 1)} +
-  scale_y_continuous(
-    name = "Odds Ratio",
-    sec.axis = sec_axis(~.*100, name = "Effective Sample Size")
-  ) +
-  scale_color_manual(values = c("Odds Ratio" = "black", "ESS/100" = "green")) +
-  labs(title = "Odds Ratio and ESS vs Prior Weight",
-       x = expression(paste("Prior Weight (", delta, ")")),
-       color = "") +
-  theme_minimal() +
-  theme(legend.position = "bottom")
-
-# 图2: ESS比例图
-p2 <- ggplot(results_with_ess, aes(x = delta)) +
-  geom_line(aes(y = ess_ratio_total), color = "purple", size = 1) +
-  geom_hline(yintercept = 1, linetype = "dashed", color = "gray50") +
-  {if(!is.na(tipping_value)) 
-    geom_vline(xintercept = tipping_value, linetype = "dotted", color = "darkblue", size = 1)} +
-  labs(title = "ESS Ratio (Adult/Pediatric)",
-       x = expression(paste("Prior Weight (", delta, ")")),
-       y = "ESS Ratio") +
-  theme_minimal()
-
-# 组合图形
-grid.arrange(p1, p2, ncol = 1, heights = c(2, 1))
+# # 图1: OR与ESS的双轴图
+# p1 <- ggplot(results_with_ess, aes(x = delta)) +
+#   geom_line(aes(y = OR_median, color = "Odds Ratio"), size = 1) +
+#   geom_ribbon(aes(ymin = OR_lower, ymax = OR_upper), alpha = 0.2, fill = "blue") +
+#   geom_line(aes(y = ess_total/100, color = "ESS/100"), size = 1) +
+#   geom_hline(yintercept = 1, linetype = "dashed", color = "red") +
+#   {if(!is.na(tipping_value)) 
+#     geom_vline(xintercept = tipping_value, linetype = "dotted", color = "darkblue", size = 1)} +
+#   scale_y_continuous(
+#     name = "Odds Ratio",
+#     sec.axis = sec_axis(~.*100, name = "Effective Sample Size")
+#   ) +
+#   scale_color_manual(values = c("Odds Ratio" = "black", "ESS/100" = "green")) +
+#   labs(title = "Odds Ratio and ESS vs Prior Weight",
+#        x = expression(paste("Prior Weight (", delta, ")")),
+#        color = "") +
+#   theme_minimal() +
+#   theme(legend.position = "bottom")
+# 
+# # 图2: ESS比例图
+# p2 <- ggplot(results_with_ess, aes(x = delta)) +
+#   geom_line(aes(y = ess_ratio_total), color = "purple", size = 1) +
+#   geom_hline(yintercept = 1, linetype = "dashed", color = "gray50") +
+#   {if(!is.na(tipping_value)) 
+#     geom_vline(xintercept = tipping_value, linetype = "dotted", color = "darkblue", size = 1)} +
+#   labs(title = "ESS Ratio (Adult/Pediatric)",
+#        x = expression(paste("Prior Weight (", delta, ")")),
+#        y = "ESS Ratio") +
+#   theme_minimal()
+# 
+# # 组合图形
+# grid.arrange(p1, p2, ncol = 1, heights = c(2, 1))
 
 # 创建ESS汇总表
 ess_summary <- results_with_ess %>%
@@ -408,27 +408,27 @@ if (!is.na(tipping_value)) {
   cat("ESS/儿科样本量比:", sprintf("%.2f", ess_at_tipping$ess_ratio_total), "\n")
 }
 
-# 对不同样本量情景进行ESS分析
-scenarios <- data.frame(
-  scenario = c("Equal weight", "Half adult weight", "One-third adult weight", "At tipping point"),
-  delta = c(1, 0.5, 0.333, ifelse(is.na(tipping_value), NA, tipping_value))
-)
-
-ess_scenarios <- lapply(scenarios$delta, function(d) {
-  if(is.na(d)) return(rep(NA, 6))
-  ess <- calculate_ess_beta(ped_data, adult_data, d)
-  c(ess$ess_total, ess$ess_treat, ess$ess_placebo, 
-    ess$ess_ratio_total, ess$ess_ratio_treat, ess$ess_ratio_placebo)
-})
-
-scenario_table <- cbind(scenarios, do.call(rbind, ess_scenarios))
-colnames(scenario_table) <- c("Scenario", "Delta", "Total ESS", "Treatment ESS", "Placebo ESS", 
-                              "Total Ratio", "Treat Ratio", "Placebo Ratio")
-
-knitr::kable(scenario_table, 
-             digits = 3,
-             caption = "ESS in Different Scenarios",
-             align = "c")
+# # 对不同样本量情景进行ESS分析
+# scenarios <- data.frame(
+#   scenario = c("Equal weight", "Half adult weight", "One-third adult weight", "At tipping point"),
+#   delta = c(1, 0.5, 0.333, ifelse(is.na(tipping_value), NA, tipping_value))
+# )
+# 
+# ess_scenarios <- lapply(scenarios$delta, function(d) {
+#   if(is.na(d)) return(rep(NA, 6))
+#   ess <- calculate_ess_beta(ped_data, adult_data, d)
+#   c(ess$ess_total, ess$ess_treat, ess$ess_placebo, 
+#     ess$ess_ratio_total, ess$ess_ratio_treat, ess$ess_ratio_placebo)
+# })
+# 
+# scenario_table <- cbind(scenarios, do.call(rbind, ess_scenarios))
+# colnames(scenario_table) <- c("Scenario", "Delta", "Total ESS", "Treatment ESS", "Placebo ESS", 
+#                               "Total Ratio", "Treat Ratio", "Placebo Ratio")
+# 
+# knitr::kable(scenario_table, 
+#              digits = 3,
+#              caption = "ESS in Different Scenarios",
+#              align = "c")
 
 # 可视化ESS随delta的变化
 ess_plot <- ggplot(results_with_ess, aes(x = delta)) +
