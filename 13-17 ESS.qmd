@@ -1,0 +1,169 @@
+---
+title: "Mixed Yue"
+format: html
+editor: visual
+---
+
+```{r}
+library(ggplot2)
+library(gridExtra)
+
+set.seed(123)  # For reproducibility
+# Step 1: Basic inputs
+adult_placebo_n_pool <- 494
+adult_placebo_events_pool <- 45
+adult_drug_n_pool <- 509
+adult_drug_events_pool <- 375
+
+pediatric_placebo_n_pool <- 6
+pediatric_placebo_events_pool <- 1
+pediatric_drug_n_pool <- 30
+pediatric_drug_events_pool <- 15
+
+# Step 2: Log-odds and variance
+log_odds_adult_placebo <- log(adult_placebo_events_pool / (adult_placebo_n_pool - adult_placebo_events_pool))
+log_odds_adult_drug <- log(adult_drug_events_pool / (adult_drug_n_pool - adult_drug_events_pool))
+adult_variance_placebo <- adult_placebo_n_pool / (adult_placebo_events_pool * (adult_placebo_n_pool - adult_placebo_events_pool))
+adult_variance_drug <- adult_drug_n_pool / (adult_drug_events_pool * (adult_drug_n_pool - adult_drug_events_pool))
+adult_variance <- adult_variance_placebo + adult_variance_drug
+
+log_odds_pediatric_placebo <- log(pediatric_placebo_events_pool / (pediatric_placebo_n_pool - pediatric_placebo_events_pool))
+log_odds_pediatric_drug <- log(pediatric_drug_events_pool / (pediatric_drug_n_pool - pediatric_drug_events_pool))
+pediatric_variance_placebo <- pediatric_placebo_n_pool / (pediatric_placebo_events_pool * (pediatric_placebo_n_pool - pediatric_placebo_events_pool))
+pediatric_variance_drug <- pediatric_drug_n_pool / (pediatric_drug_events_pool * (pediatric_drug_n_pool - pediatric_drug_events_pool))
+pediatric_variance <- pediatric_variance_placebo + pediatric_variance_drug
+
+# Step 3: Skeptical prior
+m <- 36/2
+skeptical_prior_variance <- m * pediatric_variance
+skeptical_prior_mean <- 0
+
+observed_pediatric_effect <- log_odds_pediatric_drug - log_odds_pediatric_placebo
+
+# Functions
+update_posterior_component <- function(mu_prior, var_prior, mu_lik, var_lik) {
+  var_post = 1 / (1/var_prior + 1/var_lik)
+  mu_post = var_post * (mu_prior/var_prior + mu_lik/var_lik)
+  return(list(mu = mu_post, var = var_post))
+}
+
+compute_Cj <- function(mu_prior, var_prior, mu_lik, var_lik) {
+  var_sum = var_prior + var_lik
+  dnorm(mu_lik, mean = mu_prior, sd = sqrt(var_sum))
+}
+
+# Step 4: Initialize results
+results <- data.frame(
+  a = numeric(0),
+  ci_lower = numeric(0),
+  ci_upper = numeric(0),
+  OR_median = numeric(0),
+  ESS = numeric(0)
+)
+
+# Pediatric-only posterior variance (baseline for ESS)
+skeptical_mu_vague <- 0
+skeptical_var_vague <- 1e6
+var_post_ped_only <- 1 / (1/skeptical_var_vague + 1/pediatric_variance)
+mu_post_ped_only <- var_post_ped_only * (skeptical_mu_vague/skeptical_var_vague + observed_pediatric_effect/pediatric_variance)
+n_samples <- 5000
+ped_only_samples <- rnorm(n_samples, mean = mu_post_ped_only, sd = sqrt(var_post_ped_only))
+var_no_prior <- var(ped_only_samples)
+n_pediatric <- pediatric_placebo_n_pool + pediatric_drug_n_pool
+
+# Step 5: Main loop over a
+for (a in seq(0, 1, by = 0.02)) {
+  
+  k0 <- c(a, 1 - a)
+  
+  priors <- list(
+    list(mu = log_odds_adult_drug - log_odds_adult_placebo, var = adult_variance),
+    list(mu = skeptical_prior_mean, var = skeptical_prior_variance)
+  )
+  
+  posterior_components <- list()
+  Cj <- numeric(length(priors))
+  
+  for (j in 1:length(priors)) {
+    prior <- priors[[j]]
+    posterior_components[[j]] <- update_posterior_component(
+      mu_prior = prior$mu, var_prior = prior$var,
+      mu_lik = observed_pediatric_effect, var_lik = pediatric_variance
+    )
+    Cj[j] <- compute_Cj(prior$mu, prior$var, observed_pediatric_effect, pediatric_variance)
+  }
+  
+  # Update posterior mixture weights
+  k1 <- k0 * Cj
+  k1 <- k1 / sum(k1)
+  
+  # Sample from mixture posterior
+  samples_logor <- numeric(n_samples)
+  for (s in 1:n_samples) {
+    component <- sample(1:2, size = 1, prob = k1)
+    samples_logor[s] <- rnorm(1,
+                              mean = posterior_components[[component]]$mu,
+                              sd = sqrt(posterior_components[[component]]$var))
+  }
+  
+  samples_or <- exp(samples_logor)  # transform back to OR scale
+  
+  # Save results
+  ci_lower <- quantile(samples_or, 0.025)
+  ci_upper <- quantile(samples_or, 0.975)
+  OR_median <- median(samples_or)
+  
+# 传统的有效样本量 (ESS) 计算方法
+# 使用后验样本方差与先验样本方差的比例来计算ESS
+var_with_prior <- var(samples_logor)  # 后验样本方差
+# 这里 var_no_prior 应该是基于没有先验情况下的理论方差。我们可以使用原始方差作为近似值
+var_no_prior <- pediatric_variance  # 无先验情况下的方差（假设为输入数据中的方差）
+
+# 计算有效样本量 (ESS)，假设n是样本数量
+ess <- n_pediatric * (var_no_prior / var_with_prior-1)  # 计算ESS
+
+# 保存结果
+results <- rbind(results, data.frame(a = a, ci_lower = ci_lower, ci_upper = ci_upper,
+                                     OR_median = OR_median, ESS = ess))
+
+}
+
+# Step 6: Find tipping point
+tipping_point <- results[which(results$ci_lower > 1)[1], ]
+
+cat("Tipping Point Found!\n")
+cat("Adult Prior Weight (a):", tipping_point$a, "\n")
+cat("Posterior OR Median:", round(tipping_point$OR_median, 2), "\n")
+cat("95% CI: (", round(tipping_point$ci_lower, 2), ",", round(tipping_point$ci_upper, 2), ")\n")
+cat("Tipping Point ESS:", round(tipping_point$ESS, 1), "pediatric patients\n")
+
+# Step 7: Plot
+p1 <- ggplot(results, aes(x = a)) +
+  geom_line(aes(y = OR_median), color = "blue", size = 1) +
+  geom_ribbon(aes(ymin = ci_lower, ymax = ci_upper), fill = "skyblue", alpha = 0.3) +
+  geom_hline(yintercept = 1, linetype = "dashed", color = "red") +
+  geom_vline(xintercept = tipping_point$a, linetype = "dashed", color = "darkred") +
+  labs(
+    title = "Posterior Odds Ratio vs Adult Prior Weight (a)",
+    x = "Adult Prior Weight (a)",
+    y = "Posterior Odds Ratio"
+  ) +
+  theme_minimal()
+
+p2 <- ggplot(results, aes(x = a, y = ESS)) +
+  geom_line(color = "darkgreen", size = 1) +
+  geom_point(color = "darkgreen") +
+  geom_vline(xintercept = tipping_point$a, linetype = "dashed", color = "darkred") +
+  labs(
+    title = "Effective Sample Size vs Adult Prior Weight",
+    x = "Adult Prior Weight (a)",
+    y = "Effective Sample Size (ESS)"
+  ) +
+  theme_minimal()
+
+grid.arrange(p1, p2, ncol = 2)
+
+
+
+```
+
