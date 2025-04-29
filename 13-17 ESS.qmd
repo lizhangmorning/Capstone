@@ -163,7 +163,125 @@ p2 <- ggplot(results, aes(x = a, y = ESS)) +
 
 grid.arrange(p1, p2, ncol = 2)
 
+```
+
+```{r}
+library(ggplot2)
+
+set.seed(123)
+
+# --- 数据定义
+adult_placebo_n <- 494
+adult_placebo_events <- 45
+adult_drug_n <- 509
+adult_drug_events <- 375
+
+pediatric_placebo_n <- 6
+pediatric_placebo_events <- 1
+pediatric_drug_n <- 30
+pediatric_drug_events <- 15
+
+# --- skeptical prior
+skeptical_a <- 1
+skeptical_b <- 1
+
+# --- 初始权重
+k0_1 <- 0.5
+k0_2 <- 0.5
+
+# --- 定义Beta-binomial likelihood函数
+beta_binomial_likelihood <- function(a, b, n, y) {
+  exp(lchoose(n, y) + lbeta(a + y, b + n - y) - lbeta(a, b))
+}
+
+# --- Step1: 用成人数据更新成人posterior
+# 更新函数：给定skeptical prior，观测数据，返回posterior参数
+update_adult_posterior <- function(events, n) {
+  post_a <- skeptical_a + events
+  post_b <- skeptical_b + n - events
+  list(a = post_a, b = post_b)
+}
+
+# --- Step2: 用成人posterior vs skeptical prior 比较，推断儿童
+update_child_weights <- function(adult_post_a, adult_post_b, pediatric_n, pediatric_events) {
+  # 成人posterior的beta-binomial likelihood
+  likelihood_adult <- beta_binomial_likelihood(adult_post_a, adult_post_b, pediatric_n, pediatric_events)
+  # skeptical prior的beta-binomial likelihood
+  likelihood_skeptical <- beta_binomial_likelihood(skeptical_a, skeptical_b, pediatric_n, pediatric_events)
+  
+  C1_hat <- likelihood_adult
+  C2_hat <- likelihood_skeptical
+  
+  k1_new <- (k0_1 * C1_hat) / (k0_1 * C1_hat + k0_2 * C2_hat)
+  k2_new <- (k0_2 * C2_hat) / (k0_1 * C1_hat + k0_2 * C2_hat)
+  
+  list(k1_new = k1_new, k2_new = k2_new)
+}
+
+# --- 计算 Placebo组
+adult_placebo_posterior <- update_adult_posterior(adult_placebo_events, adult_placebo_n)
+placebo_child_result <- update_child_weights(
+  adult_post_a = adult_placebo_posterior$a,
+  adult_post_b = adult_placebo_posterior$b,
+  pediatric_n = pediatric_placebo_n,
+  pediatric_events = pediatric_placebo_events
+)
+
+# --- 计算 Drug组
+adult_drug_posterior <- update_adult_posterior(adult_drug_events, adult_drug_n)
+drug_child_result <- update_child_weights(
+  adult_post_a = adult_drug_posterior$a,
+  adult_post_b = adult_drug_posterior$b,
+  pediatric_n = pediatric_drug_n,
+  pediatric_events = pediatric_drug_events
+)
+
+# --- Step3: 计算混合ESS
+adult_placebo_ess <- adult_placebo_posterior$a + adult_placebo_posterior$b
+adult_drug_ess <- adult_drug_posterior$a + adult_drug_posterior$b
+skeptical_ess <- skeptical_a + skeptical_b
+
+placebo_ESS_mixture <- placebo_child_result$k1_new * adult_placebo_ess + placebo_child_result$k2_new * skeptical_ess
+drug_ESS_mixture <- drug_child_result$k1_new * adult_drug_ess + drug_child_result$k2_new * skeptical_ess
+
+# --- 打印输出
+cat("Placebo组:\n")
+cat("  成人posterior 权重 =", round(placebo_child_result$k1_new, 4), "\n")
+cat("  Skeptical prior 权重 =", round(placebo_child_result$k2_new, 4), "\n")
+cat("  混合先验 ESS =", round(placebo_ESS_mixture, 2), "\n\n")
+
+cat("Drug组:\n")
+cat("  成人posterior 权重 =", round(drug_child_result$k1_new, 4), "\n")
+cat("  Skeptical prior 权重 =", round(drug_child_result$k2_new, 4), "\n")
+cat("  混合先验 ESS =", round(drug_ESS_mixture, 2), "\n")
+
+# --- Step4: ESS贡献图
+ess_df <- data.frame(
+  group = c(rep("Placebo", 2), rep("Drug", 2)),
+  prior_component = rep(c("Adult posterior", "Skeptical prior"), 2),
+  weight = c(
+    placebo_child_result$k1_new, placebo_child_result$k2_new,
+    drug_child_result$k1_new, drug_child_result$k2_new
+  ),
+  ess_contribution = c(
+    placebo_child_result$k1_new * adult_placebo_ess,
+    placebo_child_result$k2_new * skeptical_ess,
+    drug_child_result$k1_new * adult_drug_ess,
+    drug_child_result$k2_new * skeptical_ess
+  )
+)
+
+ggplot(ess_df, aes(x = prior_component, y = ess_contribution, fill = prior_component)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  facet_wrap(~group, scales = "free_y") +
+  geom_text(aes(label = round(ess_contribution,1)), vjust = -0.5, position = position_dodge(width = 0.9)) +
+  labs(
+    title = "各组混合先验的ESS贡献 (统一Beta-binomial)",
+    x = "",
+    y = "Effective Sample Size (ESS)"
+  ) +
+  theme_minimal() +
+  theme(legend.position = "none")
 
 
 ```
-
