@@ -309,6 +309,151 @@ grid.arrange(p1, p2, p3, ncol = 1)
 ```
 
 ```{r}
-var_drug_with_prior
-var_drug_no_prior
+library(ggplot2)
+library(gridExtra)
+
+set.seed(123)
+
+# Input data
+adult_placebo_n <- 494; adult_placebo_r <- 45
+adult_drug_n <- 509; adult_drug_r <- 375
+ped_placebo_n <- 6; ped_placebo_r <- 1
+ped_drug_n <- 30; ped_drug_r <- 15
+n_samples <- 5000
+
+# Adult weighted events and totals
+adult_placebo_eff_r <- a * adult_placebo_r
+adult_placebo_eff_n <- a * adult_placebo_n
+adult_drug_eff_r <- a * adult_drug_r
+adult_drug_eff_n <- a * adult_drug_n
+
+# Posterior parameters
+alpha_post_placebo <- ped_placebo_r + adult_placebo_eff_r + 1
+beta_post_placebo <- ped_placebo_n - ped_placebo_r + adult_placebo_eff_n - adult_placebo_eff_r + 1
+alpha_post_drug <- ped_drug_r + adult_drug_eff_r + 1
+beta_post_drug <- ped_drug_n - ped_drug_r + adult_drug_eff_n - adult_drug_eff_r + 1
+
+
+# Theoretical posterior variances (no prior)
+var_placebo_no_prior <- (alpha_ped_placebo * beta_ped_placebo) / 
+                        ((alpha_ped_placebo + beta_ped_placebo)^2 * (alpha_ped_placebo + beta_ped_placebo + 1))
+var_drug_no_prior <- (alpha_ped_drug * beta_ped_drug) /
+                     ((alpha_ped_drug + beta_ped_drug)^2 * (alpha_ped_drug + beta_ped_drug + 1))
+var_no_prior <- var_placebo_no_prior + var_drug_no_prior
+
+# Adult prior parameters
+alpha_adult_placebo <- adult_placebo_r + 1
+beta_adult_placebo <- adult_placebo_n - adult_placebo_r + 1
+alpha_adult_drug <- adult_drug_r + 1
+beta_adult_drug <- adult_drug_n - adult_drug_r + 1
+
+samples_placebo <- rbeta(n_samples, alpha_post_placebo, beta_post_placebo)
+samples_drug <- rbeta(n_samples, alpha_post_drug, beta_post_drug)
+diff <- samples_drug - samples_placebo
+
+
+# Storage
+results <- data.frame(
+  a = numeric(),
+  ci_lower = numeric(),
+  ci_upper = numeric(),
+  median_diff = numeric(),
+  ESS_placebo = numeric(),
+  ESS_drug = numeric(),
+  ESS_total = numeric()
+)
+
+# Loop over adult prior weight a ∈ [0, 1]
+for (a in seq(0, 1, by = 0.002)) {
+  # Weighted prior parameters
+  alpha_prior_placebo <- a * alpha_adult_placebo + (1 - a) * alpha_skeptical
+  beta_prior_placebo <- a * beta_adult_placebo + (1 - a) * beta_skeptical
+  alpha_prior_drug <- a * alpha_adult_drug + (1 - a) * alpha_skeptical
+  beta_prior_drug <- a * beta_adult_drug + (1 - a) * beta_skeptical
+
+  # Posterior parameters (prior + pediatric data)
+  alpha_post_placebo <- alpha_prior_placebo + ped_placebo_r
+  beta_post_placebo <- beta_prior_placebo + ped_placebo_n - ped_placebo_r
+  alpha_post_drug <- alpha_prior_drug + ped_drug_r
+  beta_post_drug <- beta_prior_drug + ped_drug_n - ped_drug_r
+
+  # Posterior samples
+  samples_placebo <- rbeta(n_samples, alpha_post_placebo, beta_post_placebo)
+  samples_drug <- rbeta(n_samples, alpha_post_drug, beta_post_drug)
+  diff <- samples_drug - samples_placebo
+
+  ci_lower <- quantile(diff, 0.025)
+  ci_upper <- quantile(diff, 0.975)
+  median_diff <- median(diff)
+
+  # Variance of fused posterior
+ var_placebo_with_prior <- (alpha_post_placebo * beta_post_placebo) /
+                          ((alpha_post_placebo + beta_post_placebo)^2 * (alpha_post_placebo + beta_post_placebo + 1))
+var_drug_with_prior <- (alpha_post_drug * beta_post_drug) /
+                       ((alpha_post_drug + beta_post_drug)^2 * (alpha_post_drug + beta_post_drug + 1))
+
+ess_placebo <- max(0, ped_placebo_n * (var_placebo_no_prior / var_placebo_with_prior - 1))
+ess_drug <- max(0, ped_drug_n * (var_drug_no_prior / var_drug_with_prior - 1))
+
+  ess_total <- ess_placebo + ess_drug
+
+  results <- rbind(results, data.frame(
+    a = a,
+    ci_lower = ci_lower,
+    ci_upper = ci_upper,
+    median_diff = median_diff,
+    ESS_placebo = ess_placebo,
+    ESS_drug = ess_drug,
+    ESS_total = ess_total
+  ))
+}
+
+# Find tipping point
+tipping_point <- results[which(results$ci_lower > 0)[1], ]
+
+# Print results
+cat("✅ Tipping Point Found:\n")
+cat("Adult Prior Weight (a):", tipping_point$a, "\n")
+cat("Posterior Difference (Drug - Placebo):", round(tipping_point$median_diff, 3), "\n")
+cat("95% CI: (", round(tipping_point$ci_lower, 3), ",", round(tipping_point$ci_upper, 3), ")\n")
+cat("ESS from adult placebo:", round(tipping_point$ESS_placebo, 1), "\n")
+cat("ESS from adult drug:", round(tipping_point$ESS_drug, 1), "\n")
+cat("Total ESS (variance reduction):", round(tipping_point$ESS_total, 1), "\n")
+
+# Plots
+p1 <- ggplot(results, aes(x = a)) +
+  geom_line(aes(y = median_diff), color = "blue", size = 1.2) +
+  geom_ribbon(aes(ymin = ci_lower, ymax = ci_upper), fill = "skyblue", alpha = 0.3) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "red") +
+  geom_vline(xintercept = tipping_point$a, linetype = "dashed", color = "darkred") +
+  labs(
+    title = "Posterior Response Rate Difference (Drug - Placebo)",
+    x = "Adult Prior Weight (a)",
+    y = "Posterior Difference"
+  ) + theme_minimal()
+
+p2 <- ggplot(results, aes(x = a)) +
+  geom_line(aes(y = ESS_placebo), color = "purple", size = 1.2) +
+  geom_line(aes(y = ESS_drug), color = "darkgreen", size = 1.2) +
+  geom_vline(xintercept = tipping_point$a, linetype = "dashed", color = "red") +
+  labs(
+    title = "Component-wise ESS (Variance Reduction)",
+    x = "Adult Prior Weight (a)",
+    y = "Component ESS"
+  ) + theme_minimal()
+
+p3 <- ggplot(results, aes(x = a, y = ESS_total)) +
+  geom_line(color = "darkorange", size = 1.2) +
+  geom_vline(xintercept = tipping_point$a, linetype = "dashed", color = "red") +
+  labs(
+    title = "Total Effective Sample Size (Variance Reduction)",
+    x = "Adult Prior Weight (a)",
+    y = "Total ESS"
+  ) + theme_minimal()
+
+grid.arrange(p1, p2, p3, ncol = 1)
+
+
+
+
 ```
