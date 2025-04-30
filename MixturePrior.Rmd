@@ -3,7 +3,7 @@ title: "MixturePrior"
 output: html_document
 date: "2025-04-23"
 ---
-
+## log(OR)
 ```{r}
 library(ggplot2)
 library(gridExtra)
@@ -167,3 +167,187 @@ p2 <- ggplot(results, aes(x = a, y = ESS)) +
 grid.arrange(p1, p2, ncol = 2)
 
 ```
+
+## Reponse rate
+
+```{r}
+library(ggplot2)
+library(gridExtra)
+set.seed(123)
+
+# Step 1: Input data
+
+# Adult data
+adult_drugA_x = 375
+adult_drugA_n = 509
+adult_placebo_x = 45
+adult_placebo_n = 494
+
+# Pediatric data
+pediatric_drugA_x = 15
+pediatric_drugA_n = 30
+pediatric_placebo_x = 1
+pediatric_placebo_n = 6
+
+# Step 2: Adult prior - Beta parameters
+adult_beta_drug_a = adult_drugA_x + 1
+adult_beta_drug_b = adult_drugA_n - adult_drugA_x + 1
+adult_beta_placebo_a = adult_placebo_x + 1
+adult_beta_placebo_b = adult_placebo_n - adult_placebo_x + 1
+
+# Step 3: Weak skeptical prior - Beta(2,2)
+weak_prior_a = 2
+weak_prior_b = 2
+
+# Step 4: Settings
+n_samples = 5000
+a_seq = seq(0, 0.2, by = 0.0001)
+
+results = data.frame(
+  a = numeric(0), 
+  OR_median = numeric(0), 
+  OR_low = numeric(0), 
+  OR_high = numeric(0)
+)
+
+ess_results = data.frame(
+  a = numeric(0),
+  ESS_drug = numeric(0),
+  ESS_placebo = numeric(0),
+  ESS_total = numeric(0)
+)
+
+# Step 5: Main loop
+for (a in a_seq) {
+  
+  # Define prior components for drug
+  prior1_drug_a = a * adult_beta_drug_a + (1-a) * weak_prior_a
+  prior1_drug_b = a * adult_beta_drug_b + (1-a) * weak_prior_b
+  
+  # Define prior components for placebo
+  prior1_placebo_a = a * adult_beta_placebo_a + (1-a) * weak_prior_a
+  prior1_placebo_b = a * adult_beta_placebo_b + (1-a) * weak_prior_b
+  
+  # Pediatric likelihood
+  x_drug = pediatric_drugA_x
+  n_drug = pediatric_drugA_n
+  x_placebo = pediatric_placebo_x
+  n_placebo = pediatric_placebo_n
+  
+  # Posterior for each prior component
+  post1_drug_a = prior1_drug_a + x_drug
+  post1_drug_b = prior1_drug_b + (n_drug - x_drug)
+  
+  post1_placebo_a = prior1_placebo_a + x_placebo
+  post1_placebo_b = prior1_placebo_b + (n_placebo - x_placebo)
+  
+  # Compute marginal likelihood Cj
+  C_drug = beta(post1_drug_a, post1_drug_b) / beta(prior1_drug_a, prior1_drug_b)
+  C_placebo = beta(post1_placebo_a, post1_placebo_b) / beta(prior1_placebo_a, prior1_placebo_b)
+  
+  # Updated weights
+  k0 = c(0.5, 0.5)  # initial mixture weights
+  k1_drug = k0[1] * C_drug
+  k1_placebo = k0[2] * C_placebo
+  
+  sum_k1 = k1_drug + k1_placebo
+  
+  w_drug = k1_drug / sum_k1
+  w_placebo = k1_placebo / sum_k1
+  
+  # Sample mixture posterior
+  p_drug_samples = numeric(n_samples)
+  p_placebo_samples = numeric(n_samples)
+  
+  for (s in 1:n_samples) {
+    # sample drug
+    if (runif(1) < w_drug) {
+      p_drug_samples[s] = rbeta(1, post1_drug_a, post1_drug_b)
+    } else {
+      p_drug_samples[s] = rbeta(1, post1_drug_a, post1_drug_b) # actually the same since 2 components merged
+    }
+    # sample placebo
+    if (runif(1) < w_placebo) {
+      p_placebo_samples[s] = rbeta(1, post1_placebo_a, post1_placebo_b)
+    } else {
+      p_placebo_samples[s] = rbeta(1, post1_placebo_a, post1_placebo_b)
+    }
+  }
+  
+  # Calculate OR
+  or_samples = (p_drug_samples / (1 - p_drug_samples)) / (p_placebo_samples / (1 - p_placebo_samples))
+  
+  # Save OR
+  results = rbind(results, data.frame(
+    a = a,
+    OR_median = median(or_samples),
+    OR_low = quantile(or_samples, 0.025),
+    OR_high = quantile(or_samples, 0.975)
+  ))
+  
+  # ESS calculation
+  ess_drug = (post1_drug_a + post1_drug_b) - pediatric_drugA_n
+  ess_placebo = (post1_placebo_a + post1_placebo_b) - pediatric_placebo_n
+  ess_total = ess_drug + ess_placebo
+  
+  ess_results = rbind(ess_results, data.frame(
+    a = a,
+    ESS_drug = ess_drug,
+    ESS_placebo = ess_placebo,
+    ESS_total = ess_total
+  ))
+}
+
+# Step 6: Find Tipping Point
+tipping_point = results[which(results$OR_low > 1)[1], ]
+
+if (!is.na(tipping_point$a)) {
+  
+  tipping_a = tipping_point$a
+  
+  # 找到对应a下的ESS
+  ess_at_tipping = ess_results[ess_results$a == tipping_a, ]
+  
+  cat("Tipping Point Found!\n")
+  cat("Adult Prior Weight (a):", tipping_point$a, "\n")
+  cat("Posterior OR Median:", round(tipping_point$OR_median, 2), "\n")
+  cat("95% Credible Interval: (", round(tipping_point$OR_low, 2), ",", round(tipping_point$OR_high, 2), ")\n")
+  cat("Effective Sample Size at Tipping Point:\n")
+  cat("- Drug Group ESS:", round(ess_at_tipping$ESS_drug, 1), "\n")
+  cat("- Placebo Group ESS:", round(ess_at_tipping$ESS_placebo, 1), "\n")
+  cat("- Total ESS:", round(ess_at_tipping$ESS_total, 1), "\n")
+} else {
+  cat("No tipping point found.\n")
+}
+
+# Step 7: Plot
+p1 <- ggplot(results, aes(x = a)) +
+  geom_line(aes(y = OR_median), color = "blue", linewidth = 1) +
+  geom_ribbon(aes(ymin = OR_low, ymax = OR_high), fill = "skyblue", alpha = 0.3) +
+  geom_hline(yintercept = 1, linetype = "dashed", color = "red") +
+  geom_vline(xintercept = tipping_point$a, linetype = "dashed", color = "darkred") +
+  theme_minimal() +
+  labs(
+    title = "Posterior OR vs Adult Prior Weight",
+    x = "Adult Prior Weight (a)",
+    y = "Odds Ratio"
+  )
+
+p2 <- ggplot(ess_results, aes(x = a, y = ESS_total)) +
+  geom_line(color = "darkgreen", linewidth = 1) +
+  geom_point(color = "darkgreen") +
+  geom_vline(xintercept = tipping_point$a, linetype = "dashed", color = "darkred") +
+  theme_minimal() +
+  labs(
+    title = "Total ESS vs Adult Prior Weight",
+    x = "Adult Prior Weight (a)",
+    y = "Total ESS"
+  )
+
+grid.arrange(p1, p2, ncol = 2)
+
+```
+
+
+
+
