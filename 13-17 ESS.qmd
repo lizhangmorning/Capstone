@@ -302,10 +302,6 @@ p3 <- ggplot(results, aes(x = a, y = ESS_total)) +
 
 grid.arrange(p1, p2, p3, ncol = 1)
 
-
-
-
-
 ```
 
 ```{r}
