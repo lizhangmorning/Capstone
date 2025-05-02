@@ -3,7 +3,7 @@ title: "MixturePrior"
 output: html_document
 date: "2025-04-23"
 ---
-## log(OR)
+### log(OR)
 ```{r}
 library(ggplot2)
 library(gridExtra)
@@ -168,8 +168,9 @@ grid.arrange(p1, p2, ncol = 2)
 
 ```
 
-## Reponse rate
 
+
+### Use response rate
 ```{r}
 library(ggplot2)
 library(gridExtra)
@@ -348,6 +349,146 @@ grid.arrange(p1, p2, ncol = 2)
 
 ```
 
+## New
+
+```{r}
+library(ggplot2)
+library(gridExtra)
+library(tidyr)
+set.seed(123)
+
+# Step 1: Input data
+adult_drugA_x <- 375; adult_drugA_n <- 509
+adult_placebo_x <- 45; adult_placebo_n <- 494
+pediatric_drugA_x <- 15; pediatric_drugA_n <- 30
+pediatric_placebo_x <- 1; pediatric_placebo_n <- 6
+n_ped_total <- pediatric_drugA_n + pediatric_placebo_n
+
+# Step 2: Prior definitions
+weak_prior_a <- 2
+weak_prior_b <- 2
+n_samples <- 5000
+w_seq <- seq(0, 1, by = 0.01)
+
+results <- data.frame(
+  w = numeric(0), OR_median = numeric(0), OR_low = numeric(0), OR_high = numeric(0),
+  ESS_total = numeric(0), ESS_drug = numeric(0), ESS_placebo = numeric(0),
+  weight_drug_post = numeric(0), weight_placebo_post = numeric(0)
+)
+
+# Step 3: Baseline weak-prior-only OR variance
+p_drug_weak <- rbeta(n_samples, weak_prior_a + pediatric_drugA_x,
+                     weak_prior_b + pediatric_drugA_n - pediatric_drugA_x)
+p_placebo_weak <- rbeta(n_samples, weak_prior_a + pediatric_placebo_x,
+                        weak_prior_b + pediatric_placebo_n - pediatric_placebo_x)
+or_weak <- (p_drug_weak / (1 - p_drug_weak)) / (p_placebo_weak / (1 - p_placebo_weak))
+log_or_weak <- log(or_weak[is.finite(or_weak)])
+var_weak <- var(log_or_weak)
+
+# Weak-prior variance by group
+var_drug_weak <- var(p_drug_weak)
+var_placebo_weak <- var(p_placebo_weak)
+
+# Step 4: Main loop
+for (w in w_seq) {
+  # Drug group
+  prior1_drug_a <- adult_drugA_x + 1
+  prior1_drug_b <- adult_drugA_n - adult_drugA_x + 1
+  prior2_drug_a <- weak_prior_a
+  prior2_drug_b <- weak_prior_b
+  post1_drug_a <- prior1_drug_a + pediatric_drugA_x
+  post1_drug_b <- prior1_drug_b + pediatric_drugA_n - pediatric_drugA_x
+  post2_drug_a <- prior2_drug_a + pediatric_drugA_x
+  post2_drug_b <- prior2_drug_b + pediatric_drugA_n - pediatric_drugA_x
+  C1_drug <- beta(post1_drug_a, post1_drug_b) / beta(prior1_drug_a, prior1_drug_b)
+  C2_drug <- beta(post2_drug_a, post2_drug_b) / beta(prior2_drug_a, prior2_drug_b)
+  w1_drug_post <- w * C1_drug / (w * C1_drug + (1 - w) * C2_drug)
+
+  # Placebo group
+  prior1_placebo_a <- adult_placebo_x + 1
+  prior1_placebo_b <- adult_placebo_n - adult_placebo_x + 1
+  prior2_placebo_a <- weak_prior_a
+  prior2_placebo_b <- weak_prior_b
+  post1_placebo_a <- prior1_placebo_a + pediatric_placebo_x
+  post1_placebo_b <- prior1_placebo_b + pediatric_placebo_n - pediatric_placebo_x
+  post2_placebo_a <- prior2_placebo_a + pediatric_placebo_x
+  post2_placebo_b <- prior2_placebo_b + pediatric_placebo_n - pediatric_placebo_x
+  C1_placebo <- beta(post1_placebo_a, post1_placebo_b) / beta(prior1_placebo_a, prior1_placebo_b)
+  C2_placebo <- beta(post2_placebo_a, post2_placebo_b) / beta(prior2_placebo_a, prior2_placebo_b)
+  w1_placebo_post <- w * C1_placebo / (w * C1_placebo + (1 - w) * C2_placebo)
+
+  # Posterior samples from mixtures
+  p_drug_samples <- ifelse(runif(n_samples) < w1_drug_post,
+                           rbeta(n_samples, post1_drug_a, post1_drug_b),
+                           rbeta(n_samples, post2_drug_a, post2_drug_b))
+  p_placebo_samples <- ifelse(runif(n_samples) < w1_placebo_post,
+                              rbeta(n_samples, post1_placebo_a, post1_placebo_b),
+                              rbeta(n_samples, post2_placebo_a, post2_placebo_b))
+  or_samples <- (p_drug_samples / (1 - p_drug_samples)) /
+                (p_placebo_samples / (1 - p_placebo_samples))
+  log_or_mix <- log(or_samples[is.finite(or_samples)])
+  var_mix <- var(log_or_mix)
+
+  # ESS calculations
+  ess_total <- max(0, n_ped_total * (var_weak / var_mix - 1))
+
+  var_drug_mix <- var(p_drug_samples)
+  ess_drug <- max(0, pediatric_drugA_n * (var_drug_weak / var_drug_mix - 1))
+
+  var_placebo_mix <- var(p_placebo_samples)
+  ess_placebo <- max(0, pediatric_placebo_n * (var_placebo_weak / var_placebo_mix - 1))
+
+  results <- rbind(results, data.frame(
+    w = w,
+    OR_median = median(or_samples),
+    OR_low = quantile(or_samples, 0.025),
+    OR_high = quantile(or_samples, 0.975),
+    ESS_total = ess_total,
+    ESS_drug = ess_drug,
+    ESS_placebo = ess_placebo,
+    weight_drug_post = w1_drug_post,
+    weight_placebo_post = w1_placebo_post
+  ))
+}
+
+# Step 5: Find tipping point
+tipping_point <- results[which(results$OR_low > 1)[1], ]
+
+if (!is.na(tipping_point$w)) {
+  cat("✔️ Tipping Point Found:\n")
+  cat(" - Mixture Weight w:", tipping_point$w, "\n")
+  cat(" - Posterior OR:", round(tipping_point$OR_median, 2),
+      " (", round(tipping_point$OR_low, 2), ",", round(tipping_point$OR_high, 2), ")\n")
+  cat(" - Posterior Weight (drug):", round(tipping_point$weight_drug_post, 3), "\n")
+  cat(" - Posterior Weight (placebo):", round(tipping_point$weight_placebo_post, 3), "\n")
+  cat(" - ESS (total):", round(tipping_point$ESS_total, 1), "\n")
+  cat("   • Drug group ESS:", round(tipping_point$ESS_drug, 1), "\n")
+  cat("   • Placebo group ESS:", round(tipping_point$ESS_placebo, 1), "\n")
+} else {
+  cat("❌ No tipping point found.\n")
+}
+
+# Step 6: Plotting
+p1 <- ggplot(results, aes(x = w)) +
+  geom_line(aes(y = OR_median), color = "blue") +
+  geom_ribbon(aes(ymin = OR_low, ymax = OR_high), fill = "lightblue", alpha = 0.4) +
+  geom_hline(yintercept = 1, linetype = "dashed", color = "red") +
+  geom_vline(xintercept = tipping_point$w, linetype = "dashed", color = "darkred") +
+  theme_minimal() +
+  labs(title = "Posterior OR vs Mixture Weight",
+       x = "Adult Prior Mixture Weight (w)", y = "Odds Ratio")
+
+ess_long <- pivot_longer(results, cols = c("ESS_total", "ESS_drug", "ESS_placebo"),
+                         names_to = "Group", values_to = "ESS")
+p2 <- ggplot(ess_long, aes(x = w, y = ESS, color = Group)) +
+  geom_line(size = 1) +
+  geom_vline(xintercept = tipping_point$w, linetype = "dashed", color = "darkred") +
+  theme_minimal() +
+  labs(title = "ESS vs Mixture Weight", x = "Adult Prior Mixture Weight (w)",
+       y = "Effective Sample Size")
+
+p1
+p2
 
 
-
+```
