@@ -168,40 +168,45 @@ grid.arrange(p1, p2, ncol = 2)
 ```{r}
 library(ggplot2)
 library(gridExtra)
+library(dplyr)
 
 set.seed(123)
 
-# Input data
+# 成人组数据
 adult_placebo_n <- 494; adult_placebo_r <- 45
 adult_drug_n <- 509; adult_drug_r <- 375
+
+# 儿童组数据
 ped_placebo_n <- 6; ped_placebo_r <- 1
 ped_drug_n <- 30; ped_drug_r <- 15
+
+# 抽样次数
 n_samples <- 5000
 
-# Pediatric-only posterior parameters (baseline for variance reduction)
+# 儿童组的无先验后验参数（仅用于计算方差基线）
 alpha_ped_placebo <- ped_placebo_r + 1
 beta_ped_placebo <- ped_placebo_n - ped_placebo_r + 1
 alpha_ped_drug <- ped_drug_r + 1
 beta_ped_drug <- ped_drug_n - ped_drug_r + 1
 
-# Theoretical posterior variances (no prior)
+# 无先验下的后验方差
 var_placebo_no_prior <- (alpha_ped_placebo * beta_ped_placebo) / 
                         ((alpha_ped_placebo + beta_ped_placebo)^2 * (alpha_ped_placebo + beta_ped_placebo + 1))
 var_drug_no_prior <- (alpha_ped_drug * beta_ped_drug) /
                      ((alpha_ped_drug + beta_ped_drug)^2 * (alpha_ped_drug + beta_ped_drug + 1))
 var_no_prior <- var_placebo_no_prior + var_drug_no_prior
 
-# Adult prior parameters
+# 成人组的后验参数（作为先验来源）
 alpha_adult_placebo <- adult_placebo_r + 1
 beta_adult_placebo <- adult_placebo_n - adult_placebo_r + 1
 alpha_adult_drug <- adult_drug_r + 1
 beta_adult_drug <- adult_drug_n - adult_drug_r + 1
 
-# Skeptical prior
+# 怀疑性先验（均匀）
 alpha_skeptical <- 1
 beta_skeptical <- 1
 
-# Storage
+# 初始化结果表格
 results <- data.frame(
   a = numeric(),
   ci_lower = numeric(),
@@ -209,42 +214,60 @@ results <- data.frame(
   median_diff = numeric(),
   ESS_placebo = numeric(),
   ESS_drug = numeric(),
-  ESS_total = numeric()
+  ESS_total = numeric(),
+  prob_superior = numeric()
 )
 
-# Loop over adult prior weight a ∈ [0, 1]
+# 遍历 adult 信息的权重 a ∈ [0, 1]
 for (a in seq(0, 1, by = 0.002)) {
-  # Weighted prior parameters
+  # 形成混合先验参数（adult 与 skeptical）
   alpha_prior_placebo <- a * alpha_adult_placebo + (1 - a) * alpha_skeptical
   beta_prior_placebo <- a * beta_adult_placebo + (1 - a) * beta_skeptical
   alpha_prior_drug <- a * alpha_adult_drug + (1 - a) * alpha_skeptical
   beta_prior_drug <- a * beta_adult_drug + (1 - a) * beta_skeptical
 
-  # Posterior parameters (prior + pediatric data)
-  alpha_post_placebo <- alpha_prior_placebo + ped_placebo_r
-  beta_post_placebo <- beta_prior_placebo + ped_placebo_n - ped_placebo_r
-  alpha_post_drug <- alpha_prior_drug + ped_drug_r
-  beta_post_drug <- beta_prior_drug + ped_drug_n - ped_drug_r
+  alpha_post_adult_placebo <- alpha_adult_placebo + ped_placebo_r
+  beta_post_adult_placebo <- beta_adult_placebo + ped_placebo_n -ped_placebo_r
+  alpha_post_adult_drug <- alpha_adult_drug + ped_drug_r
+  beta_post_adult_drug <- beta_adult_drug + ped_drug_n - ped_drug_r
 
-  # Posterior samples
-  samples_placebo <- rbeta(n_samples, alpha_post_placebo, beta_post_placebo)
-  samples_drug <- rbeta(n_samples, alpha_post_drug, beta_post_drug)
+# 后验B: 怀疑先验 + 儿童数据
+  alpha_post_skeptical_placebo <- alpha_skeptical + ped_placebo_r
+  beta_post_skeptical_placebo <- beta_skeptical + ped_placebo_n - ped_placebo_r
+  alpha_post_skeptical_drug <- alpha_skeptical + ped_drug_r
+  beta_post_skeptical_drug <- beta_skeptical + ped_drug_n - ped_drug_r
+
+  set.seed(123)
+
+# Step 1: 计算混合后的参数
+alpha_mixed_placebo <- a * alpha_post_adult_placebo + (1 - a) * alpha_post_skeptical_placebo
+beta_mixed_placebo <- a * beta_post_adult_placebo + (1 - a) * beta_post_skeptical_placebo
+
+alpha_mixed_drug <- a * alpha_post_adult_drug + (1 - a) * alpha_post_skeptical_drug
+beta_mixed_drug <- a * beta_post_adult_drug + (1 - a) * beta_post_skeptical_drug
+
+# Step 2: 从混合后的分布中进行采样
+samples_placebo <- rbeta(n_samples, alpha_mixed_placebo, beta_mixed_placebo)
+samples_drug <- rbeta(n_samples, alpha_mixed_drug, beta_mixed_drug)
+
   diff <- samples_drug - samples_placebo
 
   ci_lower <- quantile(diff, 0.025)
   ci_upper <- quantile(diff, 0.975)
   median_diff <- median(diff)
+  prob_superior <- mean(diff > 0)  # 药物优效的概率
 
-  # Variance of fused posterior
-  var_placebo_with_prior <- (alpha_post_placebo * beta_post_placebo) /
-                            ((alpha_post_placebo + beta_post_placebo)^2 * (alpha_post_placebo + beta_post_placebo + 1))
-  var_drug_with_prior <- (alpha_post_drug * beta_post_drug) /
-                         ((alpha_post_drug + beta_post_drug)^2 * (alpha_post_drug + beta_post_drug + 1))
-  
-  # ESS via variance reduction (non-negative)
-  ess_placebo <- max(0, ped_placebo_n * (var_placebo_no_prior / var_placebo_with_prior - 1))
-  ess_drug <- max(0, ped_drug_n * (var_drug_no_prior / var_drug_with_prior - 1))
-  ess_total <- ess_placebo + ess_drug
+  # ESS 计算（方差缩减法）
+var_post_placebo <- (alpha_mixed_placebo * beta_mixed_placebo) /
+  ((alpha_mixed_placebo + beta_mixed_placebo)^2 * (alpha_mixed_placebo + beta_mixed_placebo + 1))
+
+var_post_drug <- (alpha_mixed_drug * beta_mixed_drug) /
+  ((alpha_mixed_drug + beta_mixed_drug)^2 * (alpha_mixed_drug + beta_mixed_drug + 1))
+
+# ESS 计算（基于方差缩减）
+ess_placebo <- max(0, ped_placebo_n * (var_placebo_no_prior / var_post_placebo - 1))
+ess_drug <- max(0, ped_drug_n * (var_drug_no_prior / var_post_drug - 1))
+ess_total <- ess_placebo + ess_drug
 
   results <- rbind(results, data.frame(
     a = a,
@@ -253,23 +276,26 @@ for (a in seq(0, 1, by = 0.002)) {
     median_diff = median_diff,
     ESS_placebo = ess_placebo,
     ESS_drug = ess_drug,
-    ESS_total = ess_total
+    ESS_total = ess_total,
+    prob_superior = prob_superior
   ))
 }
 
-# Find tipping point
-tipping_point <- results[which(results$ci_lower > 0)[1], ]
+tipping_point <- results %>% 
+  filter(ci_lower > 0) %>% 
+  slice(1)
 
-# Print results
+# 输出 tipping point 信息
 cat("✅ Tipping Point Found:\n")
 cat("Adult Prior Weight (a):", tipping_point$a, "\n")
 cat("Posterior Difference (Drug - Placebo):", round(tipping_point$median_diff, 3), "\n")
 cat("95% CI: (", round(tipping_point$ci_lower, 3), ",", round(tipping_point$ci_upper, 3), ")\n")
+cat("Pr(Drug > Placebo):", round(tipping_point$prob_superior, 3), "\n")
 cat("ESS from adult placebo:", round(tipping_point$ESS_placebo, 1), "\n")
 cat("ESS from adult drug:", round(tipping_point$ESS_drug, 1), "\n")
 cat("Total ESS (variance reduction):", round(tipping_point$ESS_total, 1), "\n")
 
-# Plots
+# 可视化
 p1 <- ggplot(results, aes(x = a)) +
   geom_line(aes(y = median_diff), color = "blue", size = 1.2) +
   geom_ribbon(aes(ymin = ci_lower, ymax = ci_upper), fill = "skyblue", alpha = 0.3) +
@@ -282,17 +308,16 @@ p1 <- ggplot(results, aes(x = a)) +
   ) + theme_minimal()
 
 p2 <- ggplot(results, aes(x = a)) +
-  geom_line(aes(y = ESS_placebo), color = "purple", size = 1.2) +
-  geom_line(aes(y = ESS_drug), color = "darkgreen", size = 1.2) +
-  geom_vline(xintercept = tipping_point$a, linetype = "dashed", color = "red") +
+  geom_line(aes(y = prob_superior), color = "purple", size = 1.2) +
+  geom_hline(yintercept = 0.975, linetype = "dashed", color = "red") +
+  geom_vline(xintercept = tipping_point$a, linetype = "dotted", color = "darkgreen") +
   labs(
-    title = "Component-wise ESS (Variance Reduction)",
-    x = "Adult Prior Weight (a)",
-    y = "Component ESS"
+    title = "Pr(Drug > Placebo) vs Adult Prior Weight",
+    x = "Adult Prior Weight (a)", y = "Pr(Drug > Placebo)"
   ) + theme_minimal()
 
-p3 <- ggplot(results, aes(x = a, y = ESS_total)) +
-  geom_line(color = "darkorange", size = 1.2) +
+p3 <- ggplot(results, aes(x = a)) +
+  geom_line(aes(y = ESS_total), color = "darkorange", size = 1.2) +
   geom_vline(xintercept = tipping_point$a, linetype = "dashed", color = "red") +
   labs(
     title = "Total Effective Sample Size (Variance Reduction)",
@@ -302,7 +327,9 @@ p3 <- ggplot(results, aes(x = a, y = ESS_total)) +
 
 grid.arrange(p1, p2, p3, ncol = 1)
 
+
+
 ```
 
-```{}
+```         
 ```
