@@ -239,16 +239,16 @@ for (a in seq(0, 1, by = 0.002)) {
 
   set.seed(123)
 
-# Step 1: 计算混合后的参数
-alpha_mixed_placebo <- a * alpha_post_adult_placebo + (1 - a) * alpha_post_skeptical_placebo
-beta_mixed_placebo <- a * beta_post_adult_placebo + (1 - a) * beta_post_skeptical_placebo
-
-alpha_mixed_drug <- a * alpha_post_adult_drug + (1 - a) * alpha_post_skeptical_drug
-beta_mixed_drug <- a * beta_post_adult_drug + (1 - a) * beta_post_skeptical_drug
-
 # Step 2: 从混合后的分布中进行采样
-samples_placebo <- rbeta(n_samples, alpha_mixed_placebo, beta_mixed_placebo)
-samples_drug <- rbeta(n_samples, alpha_mixed_drug, beta_mixed_drug)
+samples_adult_placebo <- rbeta(n_samples, alpha_post_adult_placebo, beta_post_adult_placebo)
+samples_adult_drug <- rbeta(n_samples, alpha_post_adult_drug, beta_post_adult_drug)
+
+samples_skeptical_placebo <- rbeta(n_samples, alpha_post_skeptical_placebo, beta_post_skeptical_placebo)
+samples_skeptical_drug <- rbeta(n_samples, alpha_post_skeptical_drug, beta_post_skeptical_drug)
+
+samples_placebo <- a * samples_adult_placebo + (1 - a) * samples_skeptical_placebo
+
+samples_drug <- a * samples_adult_drug + (1 - a) * samples_skeptical_drug
 
   diff <- samples_drug - samples_placebo
 
@@ -257,17 +257,15 @@ samples_drug <- rbeta(n_samples, alpha_mixed_drug, beta_mixed_drug)
   median_diff <- median(diff)
   prob_superior <- mean(diff > 0)  # 药物优效的概率
 
-  # ESS 计算（方差缩减法）
-var_post_placebo <- (alpha_mixed_placebo * beta_mixed_placebo) /
-  ((alpha_mixed_placebo + beta_mixed_placebo)^2 * (alpha_mixed_placebo + beta_mixed_placebo + 1))
+# ESS 计算：混合分布的样本方差
+var_post_placebo <- var(samples_placebo)
+var_post_drug <- var(samples_drug)
 
-var_post_drug <- (alpha_mixed_drug * beta_mixed_drug) /
-  ((alpha_mixed_drug + beta_mixed_drug)^2 * (alpha_mixed_drug + beta_mixed_drug + 1))
-
-# ESS 计算（基于方差缩减）
+# ESS 基于方差缩减
 ess_placebo <- max(0, ped_placebo_n * (var_placebo_no_prior / var_post_placebo - 1))
 ess_drug <- max(0, ped_drug_n * (var_drug_no_prior / var_post_drug - 1))
 ess_total <- ess_placebo + ess_drug
+
 
   results <- rbind(results, data.frame(
     a = a,
