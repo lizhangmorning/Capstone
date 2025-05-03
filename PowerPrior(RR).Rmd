@@ -1,0 +1,1021 @@
+---
+title: "Power Prior(Response Rate Difference) Analysis"
+author: "Li Zhang"
+date: "2025-04-30"
+output: html_document
+---
+
+```{r}
+# Load required libraries
+library(rjags)
+library(coda)
+library(dplyr)
+library(ggplot2)
+```
+
+```{r}
+# Define data
+# Follows Binomial distribution
+pediatric_data <- list(
+  y_placebo = 1,   # Number of responses in pediatric placebo group
+  n_placebo = 6,   # Total in pediatric placebo group
+  y_drug = 15,     # Number of responses in pediatric drug group 
+  n_drug = 30      # Total in pediatric drug group
+)
+
+adult_data <- list(
+  y_placebo = 45,  # Number of responses in adult placebo group
+  n_placebo = 494, # Total in adult placebo group
+  y_drug = 375,    # Number of responses in adult drug group
+  n_drug = 509     # Total in adult drug group
+)
+```
+
+## Method 1: Implement Power Prior using RJAGS
+
+The pediatric data are modeled with a binomial likelihood, and the adult data, weighted through the power prior, form a Beta prior to jointly infer the posterior of p.
+
+### Model
+
+```{r}
+#------ Method 1: Implement Power Prior using RJAGS ------
+power_prior_rjags <- function(ped_data, adult_data, alpha, n_iter = 10000) {
+  # Define the JAGS model
+  model_string <- "
+  model {
+    # Likelihood for pediatric data
+    # Observed pediatric data modeled using binomial distribution
+    y_ped_placebo ~ dbin(p_placebo, n_ped_placebo)
+    y_ped_drug ~ dbin(p_drug, n_ped_drug)
+    
+    # Likelihood for adult data (weighted via power prior)
+    # Equivalent to down-weighting adult data to an effective sample size
+    # Transform adult data into Beta prior parameters (α as borrowing strength)
+    a_placebo <- 1 + alpha * y_adult_placebo
+    b_placebo <- 1 + alpha * (n_adult_placebo - y_adult_placebo)
+    
+    a_drug <- 1 + alpha * y_adult_drug
+    b_drug <- 1 + alpha * (n_adult_drug - y_adult_drug)
+    
+    # Prior distribution (Beta distribution)
+    # Use Beta priors to directly reflect the result of Power Prior construction
+    p_placebo ~ dbeta(a_placebo, b_placebo)
+    p_drug ~ dbeta(a_drug, b_drug)
+    
+    # Compute response rate 
+    # odds_ratio <- (p_drug / (1 - p_drug)) / (p_placebo / (1 - p_placebo))
+    # log_odds_ratio <- log(odds_ratio)
+    rr_diff <- p_drug - p_placebo
+  }
+  "
+  
+  # Prepare JAGS data list
+  jags_data <- list(
+    y_ped_placebo = ped_data$y_placebo,
+    n_ped_placebo = ped_data$n_placebo,
+    y_ped_drug = ped_data$y_drug,
+    n_ped_drug = ped_data$n_drug,
+    y_adult_placebo = adult_data$y_placebo,
+    n_adult_placebo = adult_data$n_placebo,
+    y_adult_drug = adult_data$y_drug,
+    n_adult_drug = adult_data$n_drug,
+    alpha = alpha
+  )
+  
+  # Initialize the JAGS model
+  jags_model <- jags.model(textConnection(model_string), 
+                           data = jags_data, 
+                           n.chains = 3, 
+                           quiet = TRUE)
+  
+  # Burn-in
+  update(jags_model, 5000, progress.bar = "none")
+  
+  # Draw posterior samples
+  samples <- coda.samples(jags_model, 
+                         variable.names = c("p_placebo", "p_drug", "rr_diff"), 
+                         n.iter = n_iter, 
+                         progress.bar = "none")
+  
+  # Convert to matrix for processing
+  samples_matrix <- as.matrix(samples)
+  
+rr_diff <- samples_matrix[, "rr_diff"]
+median_rr_diff <- median(rr_diff)
+ci_95 <- quantile(rr_diff, c(0.025, 0.975))
+prob_gt_0 <- mean(rr_diff > 0)  # Probability that log(OR) > 0
+
+  
+  return(list(
+    median_rr_diff = median_rr_diff,
+    ci_95 = ci_95,
+    prob_gt_0 = prob_gt_0,
+    samples = rr_diff
+  ))
+}
+
+```
+
+
+### Tipping Point 
+
+```{r}
+# 运行RJAGS模型分析并收集响应率差异的结果
+run_rjags_rr_diff_analyses <- function(ped_data, adult_data, 
+                                     alpha_min = 0.001, alpha_max = 0.5, steps = 100) {
+  alpha_seq <- seq(alpha_min, alpha_max, length.out = steps)
+  results <- data.frame()
+  
+  for (alpha in alpha_seq) {
+    # 使用您的RJAGS函数
+    rjags_res <- power_prior_rjags(ped_data, adult_data, alpha)
+    
+    results <- rbind(results, data.frame(
+      alpha = alpha,
+      median_rr_diff = rjags_res$median_rr_diff,
+      lower_ci = rjags_res$ci_95[1],
+      upper_ci = rjags_res$ci_95[2],
+      prob_gt_0 = rjags_res$prob_gt_0
+    ))
+  }
+  
+  return(results)
+}
+
+# 找到tipping point（第一个使得响应率差异下界>0的alpha值）
+find_rjags_rr_diff_tipping_point <- function(results) {
+  tp_idx <- which(results$lower_ci > 0)[1]
+  tipping_point <- ifelse(is.na(tp_idx), NA, results$alpha[tp_idx])
+  
+  if (!is.na(tipping_point)) {
+    cat("RJAGS Tipping Point (RR Diff lower bound > 0):", 
+        scales::percent(tipping_point, accuracy = 0.001), "\n")
+  } else {
+    cat("RJAGS Tipping Point: Not Found in the specified alpha range\n")
+  }
+  
+  return(tipping_point)
+}
+```
+
+
+### ESS
+
+```{r}
+# 计算基于后验方差的ESS
+calculate_ess_from_variance_rjags <- function(ped_data, adult_data, alpha_seq, n_samples = 10000) {
+  ess_results <- data.frame(alpha = alpha_seq)
+  
+  # 计算无借用情况下的后验方差 (V1)
+  # 使用alpha=0运行RJAGS模型
+  no_borrow_res <- power_prior_rjags(ped_data, adult_data, 0)
+  # 计算无借用后验方差
+  V1 <- var(no_borrow_res$samples)
+  
+  # 计算每个alpha值的ESS
+  ess_values <- numeric(length(alpha_seq))
+  borrowed_values <- numeric(length(alpha_seq))
+  variance_ratio_values <- numeric(length(alpha_seq))
+  v2_values <- numeric(length(alpha_seq))
+  
+  for (i in 1:length(alpha_seq)) {
+    alpha <- alpha_seq[i]
+    
+    # 运行RJAGS模型
+    borrow_res <- power_prior_rjags(ped_data, adult_data, alpha)
+    
+    # 计算有借用后验方差 (V2)
+    V2 <- var(borrow_res$samples)
+    
+    # 计算方差比
+    variance_ratio <- V1 / V2
+    
+    # 计算ESS
+    n_total <- ped_data$n_drug + ped_data$n_placebo
+    ess <- n_total * variance_ratio
+    borrowed <- ess - n_total
+    
+    # 存储结果
+    ess_values[i] <- ess
+    borrowed_values[i] <- borrowed
+    variance_ratio_values[i] <- variance_ratio
+    v2_values[i] <- V2
+  }
+  
+  # 构建结果数据框
+  ess_results$ess_total <- ess_values
+  ess_results$borrowed <- borrowed_values
+  ess_results$variance_ratio <- variance_ratio_values
+  ess_results$variance_noborrow <- V1
+  ess_results$variance_borrow <- v2_values
+  
+  return(ess_results)
+}
+```
+
+### Visualization
+
+
+```{r}
+# 创建响应率差异图
+plot_rjags_rr_diff <- function(results, tipping_point = NA) {
+  alpha_min <- min(results$alpha)
+  alpha_max <- max(results$alpha)
+  
+  p <- ggplot(results, aes(x = alpha)) +
+    geom_line(aes(y = median_rr_diff), size = 1, color = "darkblue") +
+    geom_ribbon(aes(ymin = lower_ci, ymax = upper_ci), alpha = 0.2, fill = "steelblue") +
+    geom_hline(yintercept = 0, linetype = "dashed", color = "red") +
+    labs(title = "RJAGS Tipping Point Analysis: Borrowing Weight vs Response Rate Difference",
+         subtitle = "Showing 95% Credible Intervals",
+         x = "Borrowing Weight (α)",
+         y = "Response Rate Difference (Drug - Placebo)") +
+    theme_minimal() +
+    scale_x_continuous(labels = scales::percent_format(accuracy = 0.1))
+  
+  if (!is.na(tipping_point)) {
+    p <- p + 
+      geom_vline(xintercept = tipping_point, linetype = "dotted", color = "purple", size = 1) +
+      annotate("text", x = tipping_point + (alpha_max - alpha_min) * 0.05, 
+               y = min(results$lower_ci) + (max(results$upper_ci) - min(results$lower_ci)) * 0.9, 
+               label = paste0("Tipping Point: ", scales::percent(tipping_point, accuracy = 0.1)),
+               color = "purple", hjust = 0)
+  }
+  
+  return(p)
+}
+
+# 创建概率图
+plot_rjags_probability <- function(results, tipping_point = NA) {
+  p <- ggplot(results, aes(x = alpha, y = prob_gt_0)) +
+    geom_line(size = 1, color = "darkgreen") +
+    geom_hline(yintercept = 0.95, linetype = "dashed", color = "red") +
+    labs(title = "RJAGS Posterior Probability of Positive Treatment Effect",
+         subtitle = "Probability that Response Rate Difference > 0",
+         x = "Borrowing Weight (α)",
+         y = "P(RR Diff > 0)") +
+    theme_minimal() +
+    scale_y_continuous(labels = scales::percent_format(accuracy = 1), limits = c(0, 1)) +
+    scale_x_continuous(labels = scales::percent_format(accuracy = 0.1))
+  
+  if (!is.na(tipping_point)) {
+    p <- p + 
+      geom_vline(xintercept = tipping_point, linetype = "dotted", color = "purple", size = 1)
+  }
+  
+  return(p)
+}
+
+# 创建ESS图
+plot_rjags_ess <- function(ess_results, tipping_point = NA, ped_data) {
+  alpha_min <- min(ess_results$alpha)
+  alpha_max <- max(ess_results$alpha)
+  n_total <- ped_data$n_drug + ped_data$n_placebo
+  
+  p <- ggplot(ess_results, aes(x = alpha)) +
+    geom_line(aes(y = ess_total), size = 1, color = "darkorange") +
+    geom_hline(yintercept = n_total, linetype = "dashed", color = "blue", 
+              size = 0.8) +
+    annotate("text", x = alpha_min + (alpha_max - alpha_min) * 0.05, 
+            y = n_total * 1.05, 
+            label = paste0("Pediatric Sample Size: ", n_total),
+            color = "blue", hjust = 0) +
+    labs(title = "RJAGS Effective Sample Size Analysis based on Variance Ratio",
+         subtitle = "ESS = n * V1/V2 where V1, V2 are variances without and with borrowing",
+         x = "Borrowing Weight (α)",
+         y = "Effective Sample Size") +
+    theme_minimal() +
+    scale_x_continuous(labels = scales::percent_format(accuracy = 0.1))
+  
+  # 添加借用样本大小曲线
+  # p <- p + geom_line(aes(y = borrowed), size = 1, color = "red", linetype = "dashed")
+  
+  # 添加借用样本大小标签
+  p <- p + scale_y_continuous(
+    name = "Effective Sample Size",
+    sec.axis = sec_axis(~(. - n_total), name = "Borrowed Sample Size")
+  )
+  
+  if (!is.na(tipping_point)) {
+    tp_idx <- which(abs(ess_results$alpha - tipping_point) == min(abs(ess_results$alpha - tipping_point)))
+    tp_ess <- ess_results$ess_total[tp_idx]
+    tp_borrowed <- ess_results$borrowed[tp_idx]
+    
+    p <- p + 
+      geom_vline(xintercept = tipping_point, linetype = "dotted", color = "purple", size = 1) +
+      annotate("text", x = tipping_point + (alpha_max - alpha_min) * 0.05, 
+               y = max(ess_results$ess_total) * 0.5,
+               label = paste0("ESS at TP: ", round(tp_ess, 1), 
+                             "\nBorrowed: ", round(tp_borrowed, 1)),
+               color = "purple", hjust = 0)
+  }
+  
+  return(p)
+}
+
+# 创建方差比图
+plot_rjags_variance_ratio <- function(ess_results, tipping_point = NA) {
+  alpha_min <- min(ess_results$alpha)
+  alpha_max <- max(ess_results$alpha)
+  
+  p <- ggplot(ess_results, aes(x = alpha)) +
+    geom_line(aes(y = variance_ratio), size = 1, color = "purple") +
+    geom_hline(yintercept = 1, linetype = "dashed", color = "gray50") +
+    labs(title = "RJAGS Variance Ratio Analysis",
+         subtitle = "Ratio of posterior variances: V1/V2",
+         x = "Borrowing Weight (α)",
+         y = "Variance Ratio (V1/V2)") +
+    theme_minimal() +
+    scale_x_continuous(labels = scales::percent_format(accuracy = 0.1))
+  
+  if (!is.na(tipping_point)) {
+    tp_idx <- which(abs(ess_results$alpha - tipping_point) == min(abs(ess_results$alpha - tipping_point)))
+    tp_var_ratio <- ess_results$variance_ratio[tp_idx]
+    
+    p <- p + 
+      geom_vline(xintercept = tipping_point, linetype = "dotted", color = "purple", size = 1) +
+      annotate("text", x = tipping_point + (alpha_max - alpha_min) * 0.05, 
+               y = max(ess_results$variance_ratio) * 0.8,
+               label = paste0("Var Ratio at TP: ", round(tp_var_ratio, 2)),
+               color = "purple", hjust = 0)
+  }
+  
+  return(p)
+}
+```
+
+
+### Main Function
+
+
+```{r}
+# 主函数，组合所有步骤
+tipping_point_analysis_rjags <- function(ped_data, adult_data, 
+                                        alpha_min = 0.001, alpha_max = 0.5, steps = 50,
+                                        n_samples = 10000) {
+  # 步骤1：计算alpha序列 (使用较少的步骤，因为RJAGS计算较慢)
+  alpha_seq <- seq(alpha_min, alpha_max, length.out = steps)
+  
+  # 步骤2：运行RJAGS分析
+  results <- run_rjags_rr_diff_analyses(ped_data, adult_data, alpha_min, alpha_max, steps)
+  
+  # 步骤3：找到tipping point
+  tipping_point <- find_rjags_rr_diff_tipping_point(results)
+  
+  # 步骤4：计算基于方差的ESS (可选 - RJAGS计算较慢，可以注释掉)
+  ess_results <- calculate_ess_from_variance_rjags(ped_data, adult_data, alpha_seq, n_samples)
+  
+  # 步骤5：创建图表
+  p1 <- plot_rjags_rr_diff(results, tipping_point)
+  p2 <- plot_rjags_probability(results, tipping_point)
+  p3 <- plot_rjags_ess(ess_results, tipping_point, ped_data)
+  p4 <- plot_rjags_variance_ratio(ess_results, tipping_point)
+  
+  # 计算tipping point对应的ESS和借用的样本
+  if (!is.na(tipping_point) && !is.null(ess_results)) {
+    tp_idx <- which(abs(ess_results$alpha - tipping_point) == min(abs(ess_results$alpha - tipping_point)))
+    tp_ess <- ess_results$ess_total[tp_idx]
+    tp_borrowed <- ess_results$borrowed[tp_idx]
+    tp_var_ratio <- ess_results$variance_ratio[tp_idx]
+  } else {
+    tp_ess <- NA
+    tp_borrowed <- NA
+    tp_var_ratio <- NA
+  }
+  
+  # 返回所有结果
+  return(list(
+    results = results,
+    ess_results = ess_results,
+    tipping_point = tipping_point,
+    tipping_point_ess = tp_ess,
+    tipping_point_borrowed = tp_borrowed,
+    tipping_point_var_ratio = tp_var_ratio,
+    plot_rr_diff = p1,
+    plot_prob = p2,
+    plot_ess = p3,
+    plot_var_ratio = p4
+  ))
+}
+```
+
+
+### Run
+
+```{r}
+# 运行RJAGS Tipping Point分析
+tp_analysis_rjags <- tipping_point_analysis_rjags(pediatric_data, adult_data,
+                                      alpha_min = 0.001, 
+                                      alpha_max = 0.008, 
+                                      steps = 70)
+# 显示图表
+tp_analysis_rjags$plot_rr_diff
+tp_analysis_rjags$plot_prob
+tp_analysis_rjags$plot_ess
+tp_analysis_rjags$plot_var_ratio
+# 获取tipping point
+cat("RJAGS Tipping Point Alpha:", tp_analysis_rjags$tipping_point, "\n")
+cat("Corresponding ESS:", tp_analysis_rjags$tipping_point_ess, "\n")
+cat("Corresponding Borrowed ESS:", tp_analysis_rjags$tipping_point_borrowed, "\n")
+cat("Corresponding Variance Ratio:", tp_analysis_rjags$tipping_point_var_ratio, "\n")
+```
+
+
+
+## Method 2: Direct Beta-Binomial Approach
+
+### Model
+
+```{r}
+#------ Method 2: Direct Beta-Binomial Approach with response rate ------
+power_prior_beta <- function(ped_data, adult_data, alpha, n_samples = 10000) {
+  a0 <- 1
+  b0 <- 1
+  
+  a_placebo <- a0 + alpha * adult_data$y_placebo
+  b_placebo <- b0 + alpha * (adult_data$n_placebo - adult_data$y_placebo)
+  
+  a_drug <- a0 + alpha * adult_data$y_drug
+  b_drug <- b0 + alpha * (adult_data$n_drug - adult_data$y_drug)
+  
+  a_placebo_post <- a_placebo + ped_data$y_placebo
+  b_placebo_post <- b_placebo + (ped_data$n_placebo - ped_data$y_placebo)
+  
+  a_drug_post <- a_drug + ped_data$y_drug
+  b_drug_post <- b_drug + (ped_data$n_drug - ped_data$y_drug)
+  
+  p_placebo_samples <- rbeta(n_samples, a_placebo_post, b_placebo_post)
+  p_drug_samples <- rbeta(n_samples, a_drug_post, b_drug_post)
+  
+  # logor_samples <- log((p_drug_samples / (1 - p_drug_samples)) /
+  #                      (p_placebo_samples / (1 - p_placebo_samples)))
+  # 
+  # median_logor <- median(logor_samples)
+  # ci_95_logor <- quantile(logor_samples, c(0.025, 0.975))
+  # prob_gt_0 <- mean(logor_samples > 0)
+  
+  rr_diff <- p_drug_samples - p_placebo_samples
+  median_rr_diff <- median(rr_diff)
+  ci_95 <- quantile(rr_diff, c(0.025, 0.975))
+  prob_gt_0 <- mean(rr_diff > 0)
+  
+  return(list(
+    median_rr_diff = median_rr_diff,
+    ci_95 = ci_95,
+    prob_gt_0 = prob_gt_0,
+    samples = rr_diff
+  ))
+}
+
+```
+
+
+### Tipping Point
+
+
+```{r}
+#------ Tipping Point Analysis for Beta-Binomial ------
+# 运行Beta-Binomial模型并收集响应率差异的结果
+run_rr_diff_analyses <- function(ped_data, adult_data, 
+                               alpha_min = 0.001, alpha_max = 0.5, steps = 100) {
+  alpha_seq <- seq(alpha_min, alpha_max, length.out = steps)
+  results <- data.frame()
+  
+  for (alpha in alpha_seq) {
+    beta_res <- power_prior_beta(ped_data, adult_data, alpha)
+    
+    results <- rbind(results, data.frame(
+      alpha = alpha,
+      median_rr_diff = beta_res$median_rr_diff,
+      lower_ci = beta_res$ci_95[1],
+      upper_ci = beta_res$ci_95[2],
+      prob_gt_0 = beta_res$prob_gt_0
+    ))
+  }
+  
+  return(results)
+}
+
+# 找到tipping point（第一个使得响应率差异下界>0的alpha值）
+find_rr_diff_tipping_point <- function(results) {
+  tp_idx <- which(results$lower_ci > 0)[1]
+  tipping_point <- ifelse(is.na(tp_idx), NA, results$alpha[tp_idx])
+  
+  if (!is.na(tipping_point)) {
+    cat("Beta-Binomial Tipping Point (RR Diff lower bound > 0):", 
+        scales::percent(tipping_point, accuracy = 0.001), "\n")
+  } else {
+    cat("Beta-Binomial Tipping Point: Not Found in the specified alpha range\n")
+  }
+  
+  return(tipping_point)
+}
+```
+
+### ESS
+
+
+```{r}
+# 计算基于后验方差的ESS
+calculate_ess_from_variance <- function(ped_data, adult_data, alpha_seq, n_samples = 10000) {
+  ess_results <- data.frame(alpha = alpha_seq)
+  
+  # 计算无借用情况下的后验方差 (V1)
+  # 使用非信息性先验 Beta(1,1)
+  a0 <- 1
+  b0 <- 1
+  
+  # 添加儿科数据
+  a_placebo_post_noborrow <- a0 + ped_data$y_placebo
+  b_placebo_post_noborrow <- b0 + (ped_data$n_placebo - ped_data$y_placebo)
+  
+  a_drug_post_noborrow <- a0 + ped_data$y_drug
+  b_drug_post_noborrow <- b0 + (ped_data$n_drug - ped_data$y_drug)
+  
+  # 从后验分布抽样
+  p_placebo_samples_noborrow <- rbeta(n_samples, a_placebo_post_noborrow, b_placebo_post_noborrow)
+  p_drug_samples_noborrow <- rbeta(n_samples, a_drug_post_noborrow, b_drug_post_noborrow)
+  
+  # 计算响应率差异样本
+  rr_diff_noborrow <- p_drug_samples_noborrow - p_placebo_samples_noborrow
+  
+  # 计算无借用后验方差 (V1)
+  V1 <- var(rr_diff_noborrow)
+  
+  # 计算每个alpha值的ESS
+  ess_values <- numeric(length(alpha_seq))
+  borrowed_values <- numeric(length(alpha_seq))
+  variance_ratio_values <- numeric(length(alpha_seq))
+  
+  for (i in 1:length(alpha_seq)) {
+    alpha <- alpha_seq[i]
+    
+    # 使用alpha权重构建信息性先验
+    a_placebo <- a0 + alpha * adult_data$y_placebo
+    b_placebo <- b0 + alpha * (adult_data$n_placebo - adult_data$y_placebo)
+    
+    a_drug <- a0 + alpha * adult_data$y_drug
+    b_drug <- b0 + alpha * (adult_data$n_drug - adult_data$y_drug)
+    
+    # 添加儿科数据
+    a_placebo_post <- a_placebo + ped_data$y_placebo
+    b_placebo_post <- b_placebo + (ped_data$n_placebo - ped_data$y_placebo)
+    
+    a_drug_post <- a_drug + ped_data$y_drug
+    b_drug_post <- b_drug + (ped_data$n_drug - ped_data$y_drug)
+    
+    # 从后验分布抽样
+    p_placebo_samples <- rbeta(n_samples, a_placebo_post, b_placebo_post)
+    p_drug_samples <- rbeta(n_samples, a_drug_post, b_drug_post)
+    
+    # 计算响应率差异样本
+    rr_diff <- p_drug_samples - p_placebo_samples
+    
+    # 计算有借用后验方差 (V2)
+    V2 <- var(rr_diff)
+    
+    # 计算方差比
+    variance_ratio <- V1 / V2
+    
+    # 计算ESS
+    n_total <- ped_data$n_drug + ped_data$n_placebo
+    ess <- n_total * variance_ratio
+    borrowed <- ess - n_total
+    
+    # 存储结果
+    ess_values[i] <- ess
+    borrowed_values[i] <- borrowed
+    variance_ratio_values[i] <- variance_ratio
+  }
+  
+  # 构建结果数据框
+  ess_results$ess_total <- ess_values
+  ess_results$borrowed <- borrowed_values
+  ess_results$variance_ratio <- variance_ratio_values
+  ess_results$variance_noborrow <- V1
+  
+  return(ess_results)
+}
+```
+
+### Visualization
+
+```{r}
+# 创建响应率差异图 (Beta-Binomial)
+plot_rr_diff <- function(results, tipping_point = NA) {
+  alpha_min <- min(results$alpha)
+  alpha_max <- max(results$alpha)
+  
+  p <- ggplot(results, aes(x = alpha)) +
+    geom_line(aes(y = median_rr_diff), size = 1, color = "darkblue") +
+    geom_ribbon(aes(ymin = lower_ci, ymax = upper_ci), alpha = 0.2, fill = "steelblue") +
+    geom_hline(yintercept = 0, linetype = "dashed", color = "red") +
+    labs(title = "Beta-Binomial Tipping Point Analysis: Borrowing Weight vs Response Rate Difference",
+         subtitle = "Showing 95% Credible Intervals",
+         x = "Borrowing Weight (α)",
+         y = "Response Rate Difference (Drug - Placebo)") +
+    theme_minimal() +
+    scale_x_continuous(labels = scales::percent_format(accuracy = 0.1))
+  
+  if (!is.na(tipping_point)) {
+    p <- p + 
+      geom_vline(xintercept = tipping_point, linetype = "dotted", color = "purple", size = 1) +
+      annotate("text", x = tipping_point + (alpha_max - alpha_min) * 0.05, 
+               y = min(results$lower_ci) + (max(results$upper_ci) - min(results$lower_ci)) * 0.9, 
+               label = paste0("Tipping Point: ", scales::percent(tipping_point, accuracy = 0.1)),
+               color = "purple", hjust = 0)
+  }
+  
+  return(p)
+}
+
+# 创建概率图 (Beta-Binomial)
+plot_probability <- function(results, tipping_point = NA) {
+  p <- ggplot(results, aes(x = alpha, y = prob_gt_0)) +
+    geom_line(size = 1, color = "darkgreen") +
+    geom_hline(yintercept = 0.95, linetype = "dashed", color = "red") +
+    labs(title = "Beta-Binomial Posterior Probability of Positive Treatment Effect",
+         subtitle = "Probability that Response Rate Difference > 0",
+         x = "Borrowing Weight (α)",
+         y = "P(RR Diff > 0)") +
+    theme_minimal() +
+    scale_y_continuous(labels = scales::percent_format(accuracy = 1), limits = c(0, 1)) +
+    scale_x_continuous(labels = scales::percent_format(accuracy = 0.1))
+  
+  if (!is.na(tipping_point)) {
+    p <- p + 
+      geom_vline(xintercept = tipping_point, linetype = "dotted", color = "purple", size = 1)
+  }
+  
+  return(p)
+}
+
+# 创建方差比图 (Beta-Binomial)
+plot_variance_ratio <- function(ess_results, tipping_point = NA) {
+  alpha_min <- min(ess_results$alpha)
+  alpha_max <- max(ess_results$alpha)
+  
+  p <- ggplot(ess_results, aes(x = alpha)) +
+    geom_line(aes(y = variance_ratio), size = 1, color = "purple") +
+    geom_hline(yintercept = 1, linetype = "dashed", color = "gray50") +
+    labs(title = "Beta-Binomial Variance Ratio Analysis",
+         subtitle = "Ratio of posterior variances: V1/V2",
+         x = "Borrowing Weight (α)",
+         y = "Variance Ratio (V1/V2)") +
+    theme_minimal() +
+    scale_x_continuous(labels = scales::percent_format(accuracy = 0.1))
+  
+  if (!is.na(tipping_point)) {
+    tp_idx <- which(abs(ess_results$alpha - tipping_point) == min(abs(ess_results$alpha - tipping_point)))
+    tp_var_ratio <- ess_results$variance_ratio[tp_idx]
+    
+    p <- p + 
+      geom_vline(xintercept = tipping_point, linetype = "dotted", color = "purple", size = 1) +
+      annotate("text", x = tipping_point + (alpha_max - alpha_min) * 0.05, 
+               y = max(ess_results$variance_ratio) * 0.8,
+               label = paste0("Var Ratio at TP: ", round(tp_var_ratio, 2)),
+               color = "purple", hjust = 0)
+  }
+  
+  return(p)
+}
+```
+
+### Main Function
+
+
+```{r}
+tipping_point_analysis_rr_diff <- function(ped_data, adult_data, 
+                                         alpha_min = 0.001, alpha_max = 0.5, steps = 100,
+                                         n_samples = 10000) {
+  # 步骤1：计算alpha序列
+  alpha_seq <- seq(alpha_min, alpha_max, length.out = steps)
+  
+  # 步骤2：运行分析
+  results <- run_rr_diff_analyses(ped_data, adult_data, alpha_min, alpha_max, steps)
+  
+  # 步骤3：找到tipping point
+  tipping_point <- find_rr_diff_tipping_point(results)
+  
+  # 步骤4：计算基于方差的ESS
+  ess_results <- calculate_ess_from_variance(ped_data, adult_data, alpha_seq, n_samples)
+  
+  # 步骤5：创建图表
+  p1 <- plot_rr_diff(results, tipping_point)
+  p2 <- plot_probability(results, tipping_point)
+  p3 <- plot_ess_from_variance(ess_results, tipping_point, ped_data)
+  p4 <- plot_variance_ratio(ess_results, tipping_point)
+  
+  # 计算tipping point对应的ESS和借用的样本
+  if (!is.na(tipping_point)) {
+    tp_idx <- which(abs(ess_results$alpha - tipping_point) == min(abs(ess_results$alpha - tipping_point)))
+    tp_ess <- ess_results$ess_total[tp_idx]
+    tp_borrowed <- ess_results$borrowed[tp_idx]
+    tp_var_ratio <- ess_results$variance_ratio[tp_idx]
+  } else {
+    tp_ess <- NA
+    tp_borrowed <- NA
+    tp_var_ratio <- NA
+  }
+  
+  # 返回所有结果
+  return(list(
+    results = results,
+    ess_results = ess_results,
+    tipping_point = tipping_point,
+    tipping_point_ess = tp_ess,
+    tipping_point_borrowed = tp_borrowed,
+    tipping_point_var_ratio = tp_var_ratio,
+    plot_rr_diff = p1,
+    plot_prob = p2,
+    plot_ess = p3,
+    plot_var_ratio = p4
+  ))
+}
+```
+
+
+### Run
+
+
+```{r}
+# 运行Tipping Point分析
+tp_analysis <- tipping_point_analysis_rr_diff(pediatric_data, adult_data,
+                                      alpha_min = 0.001, 
+                                      alpha_max = 0.008, 
+                                      steps = 70, n_samples = 10000)
+
+# 显示图表
+tp_analysis$plot_rr_diff
+tp_analysis$plot_prob
+tp_analysis$plot_ess
+tp_analysis$plot_var_ratio
+
+# 获取tipping point
+cat("Tipping Point Alpha:", tp_analysis$tipping_point, "\n")
+cat("Corresponding ESS:", tp_analysis$tipping_point_ess, "\n")
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+```{r}
+#------ Power Prior: Tipping Point Analysis ------
+# Analyze, compare, and visualize Power Prior (RJAGS & Beta-Binomial) across a range of α values,
+# and identify tipping points where the lower bound of the 95% CrI for OR exceeds 1.
+
+tipping_point_analysis <- function(ped_data, adult_data, method = "both",
+                                  alpha_min = 0.001, alpha_max = 0.01, steps = 100) {
+  alpha_seq <- seq(alpha_min, alpha_max, length.out = steps)
+  results <- data.frame()
+  
+  for (alpha in alpha_seq) {
+    if (method %in% c("both", "RJAGS")) {
+      rjags_res <- power_prior_rjags(ped_data, adult_data, alpha)
+      results <- rbind(results, data.frame(
+        alpha = alpha,
+        method = "RJAGS",
+        median_logor = rjags_res$median_rr_diff,
+        lower_ci = rjags_res$ci_95[1],
+        upper_ci = rjags_res$ci_95[2],
+        prob_gt_0 = rjags_res$prob_gt_0  # 注意是 log(OR) > 0
+
+      ))
+    }
+    
+    if (method %in% c("both", "Beta-Binomial")) {
+      beta_res <- power_prior_beta(ped_data, adult_data, alpha)
+      results <- rbind(results, data.frame(
+        alpha = alpha,
+        method = "Beta-Binomial",
+        median_rr_diff = beta_res$median_rr_diff,
+        lower_ci = beta_res$ci_95[1],
+        upper_ci = beta_res$ci_95[2],
+        prob_gt_0 = beta_res$prob_gt_0
+      ))
+    }
+  }
+  
+  # Identify tipping points (first alpha where 95% CrI lower bound > 1)
+  if ("RJAGS" %in% unique(results$method)) {
+    rjags_data <- subset(results, method == "RJAGS")
+    rjags_tp_idx <- which(rjags_data$lower_ci > 0)[1]
+    rjags_tipping <- ifelse(is.na(rjags_tp_idx), NA, rjags_data$alpha[rjags_tp_idx])
+    cat("RJAGS Tipping Point (OR lower bound > 1):", ifelse(is.na(rjags_tipping), "Not Found", 
+                                              paste0(scales::percent(rjags_tipping, accuracy = 0.001))), "\n")
+  }
+  
+  if ("Beta-Binomial" %in% unique(results$method)) {
+    beta_data <- subset(results, method == "Beta-Binomial")
+    beta_tp_idx <- which(beta_data$lower_ci > 0)[1]
+    beta_tipping <- ifelse(is.na(beta_tp_idx), NA, beta_data$alpha[beta_tp_idx])
+    cat("Beta-Binomial Tipping Point (OR lower bound > 1):", ifelse(is.na(beta_tipping), "Not Found", 
+                                                     paste0(scales::percent(beta_tipping, accuracy = 0.001))), "\n")
+  }
+  
+  # Create visualization
+ p <- ggplot(results, aes(x = alpha, color = method, group = method)) +
+    geom_line(aes(y = median_logor), size = 1) +
+    geom_ribbon(aes(ymin = lower_ci, ymax = upper_ci, fill = method), alpha = 0.2) +
+    geom_hline(yintercept = 0, linetype = "dashed", color = "black") +
+    labs(title = "Tipping Point Analysis: Borrowing Weight vs log(OR)",
+         subtitle = "Showing 95% Credible Intervals for log(OR)",
+         x = "Borrowing Weight (α)",
+         y = "Log Odds Ratio (log(OR))",
+         color = "Method",
+         fill = "Method") +
+    theme_minimal() +
+    scale_x_continuous(labels = scales::percent_format(accuracy = 0.001))
+
+  
+  # Annotate tipping points on plot if available
+  if (exists("rjags_tipping") && !is.na(rjags_tipping)) {
+    p <- p + geom_vline(xintercept = rjags_tipping, linetype = "dotted", 
+                       color = "blue", size = 1)
+  }
+  
+  if (exists("beta_tipping") && !is.na(beta_tipping)) {
+    p <- p + geom_vline(xintercept = beta_tipping, linetype = "dotted", 
+                       color = "red", size = 1)
+  }
+  
+  return(list(
+    results = results,
+    plot = p,
+    rjags_tipping = if (exists("rjags_tipping")) rjags_tipping else NA,
+    beta_tipping = if (exists("beta_tipping")) beta_tipping else NA
+  ))
+}
+
+```
+
+
+```{r}
+# More fine-grained tipping point analysis, focusing on the range between 0.1% and 0.8%
+tp_analysis <- tipping_point_analysis_rr_diff(pediatric_data, adult_data, 
+                                      alpha_min = 0.001, 
+                                      alpha_max = 0.008, 
+                                      steps = 70)
+```
+
+```{r}
+# Output the exact tipping point values (displayed as percentages)
+cat("\n--- Tipping Point Values (Information Borrowing Weight) ---\n")
+cat("RJAGS Method:", ifelse(is.na(tp_analysis$rjags_tipping), "Not found", 
+                      paste0(scales::percent(tp_analysis$rjags_tipping, accuracy = 0.001))), "\n")
+cat("Beta-Binomial Method:", ifelse(is.na(tp_analysis$beta_tipping), "Not found", 
+                             paste0(scales::percent(tp_analysis$beta_tipping, accuracy = 0.001))), "\n")
+
+```
+
+Calculate Effective Sample Size (ESS)
+
+```{r}
+# Method 1: ESS for Beta-Binomial method
+evaluate_ess_beta <- function(ped_data, adult_data, alpha) {
+  # For Beta-Binomial model, ESS = alpha * historical sample size
+  ess_treat <- alpha * adult_data$n_drug
+  ess_placebo <- alpha * adult_data$n_placebo
+  ess_total <- ess_treat + ess_placebo
+  
+  ess_ratio_treat <- ess_treat / ped_data$n_drug
+  ess_ratio_placebo <- ess_placebo / ped_data$n_placebo
+  ess_ratio_total <- ess_total / (ped_data$n_drug + ped_data$n_placebo)
+  
+  return(list(
+    ess_treat = ess_treat,
+    ess_placebo = ess_placebo,
+    ess_total = ess_total,
+    ess_ratio_treat = ess_ratio_treat,
+    ess_ratio_placebo = ess_ratio_placebo,
+    ess_ratio_total = ess_ratio_total
+  ))
+}
+```
+
+```{r}
+# Method 2: ESS for RJAGS method (same calculation logic, because adult info is down-weighted by alpha)
+evaluate_ess_rjags <- function(ped_data, adult_data, alpha) {
+  # In RJAGS with power prior, effective contribution is also alpha * sample size
+  ess_treat <- alpha * adult_data$n_drug
+  ess_placebo <- alpha * adult_data$n_placebo
+  ess_total <- ess_treat + ess_placebo
+  
+  ess_ratio_treat <- ess_treat / ped_data$n_drug
+  ess_ratio_placebo <- ess_placebo / ped_data$n_placebo
+  ess_ratio_total <- ess_total / (ped_data$n_drug + ped_data$n_placebo)
+  
+  return(list(
+    ess_treat = ess_treat,
+    ess_placebo = ess_placebo,
+    ess_total = ess_total,
+    ess_ratio_treat = ess_ratio_treat,
+    ess_ratio_placebo = ess_ratio_placebo,
+    ess_ratio_total = ess_ratio_total
+  ))
+}
+```
+
+```{r}
+#------ Summarize ESS at Tipping Point ------
+
+# Assuming tipping point results already available from previous analysis
+tp_rjags_alpha <- tp_analysis$rjags_tipping
+tp_beta_alpha <- tp_analysis$beta_tipping
+
+# Calculate ESS at RJAGS tipping point
+if (!is.na(tp_rjags_alpha)) {
+  ess_rjags <- evaluate_ess_rjags(pediatric_data, adult_data, tp_rjags_alpha)
+  cat("\n--- ESS at RJAGS Tipping Point (", scales::percent(tp_rjags_alpha, accuracy = 0.001), ") ---\n")
+  cat("Treatment ESS:", round(ess_rjags$ess_treat, 2), "\n")
+  cat("Placebo ESS:", round(ess_rjags$ess_placebo, 2), "\n")
+  cat("Total ESS:", round(ess_rjags$ess_total, 2), "\n")
+  cat("ESS to pediatric sample size ratio:", round(ess_rjags$ess_ratio_total, 3), "\n")
+}
+
+# Calculate ESS at Beta-Binomial tipping point
+if (!is.na(tp_beta_alpha)) {
+  ess_beta <- evaluate_ess_beta(pediatric_data, adult_data, tp_beta_alpha)
+  cat("\n--- ESS at Beta-Binomial Tipping Point (", scales::percent(tp_beta_alpha, accuracy = 0.001), ") ---\n")
+  cat("Treatment ESS:", round(ess_beta$ess_treat, 2), "\n")
+  cat("Placebo ESS:", round(ess_beta$ess_placebo, 2), "\n")
+  cat("Total ESS:", round(ess_beta$ess_total, 2), "\n")
+  cat("ESS to pediatric sample size ratio:", round(ess_beta$ess_ratio_total, 3), "\n")
+}
+```
+plot how the Effective Sample Size (ESS) changes with α for the RJAGS and Beta-Binomial.
+
+```{r}
+# Create ESS calculation function
+calculate_ess <- function(ped_data, adult_data, alpha) {
+  ess_treat <- alpha * adult_data$n_drug
+  ess_placebo <- alpha * adult_data$n_placebo
+  ess_total <- ess_treat + ess_placebo
+  ess_ratio_total <- ess_total / (ped_data$n_drug + ped_data$n_placebo)
+  
+  return(list(
+    ess_treat = ess_treat,
+    ess_placebo = ess_placebo,
+    ess_total = ess_total,
+    ess_ratio_total = ess_ratio_total
+  ))
+}
+
+# Add ESS calculation to the tipping point results
+tp_results_with_ess <- tp_analysis$results %>%
+  mutate(
+    ess_treat = alpha * adult_data$n_drug,
+    ess_placebo = alpha * adult_data$n_placebo,
+    ess_total = ess_treat + ess_placebo,
+    ess_ratio_total = ess_total / (pediatric_data$n_drug + pediatric_data$n_placebo)
+  )
+
+# Separate RJAGS and Beta-Binomial results
+rjags_ess <- tp_results_with_ess %>% filter(method == "RJAGS")
+beta_ess <- tp_results_with_ess %>% filter(method == "Beta-Binomial")
+
+# Plot for RJAGS
+ess_plot_rjags <- ggplot(rjags_ess, aes(x = alpha)) +
+  geom_area(aes(y = ess_total), fill = "lightblue", alpha = 0.4) +
+  geom_line(aes(y = ess_treat), color = "red", size = 1, linetype = "solid") +
+  geom_line(aes(y = ess_placebo), color = "darkgreen", size = 1, linetype = "dashed") +
+  {if (!is.na(tp_analysis$rjags_tipping))
+    geom_vline(xintercept = tp_analysis$rjags_tipping, color = "blue", linetype = "dotted", size = 1)} +
+  labs(title = "Effective Sample Size Components (RJAGS Method)",
+       x = "Borrowing Weight (α)",
+       y = "Effective Sample Size",
+       fill = "",
+       color = "") +
+  theme_minimal() +
+  scale_x_continuous(labels = scales::percent_format(accuracy = 0.1)) +
+  theme(legend.position = "bottom")
+
+# Plot for Beta-Binomial
+ess_plot_beta <- ggplot(beta_ess, aes(x = alpha)) +
+  geom_area(aes(y = ess_total), fill = "lightpink", alpha = 0.4) +
+  geom_line(aes(y = ess_treat), color = "red", size = 1, linetype = "solid") +
+  geom_line(aes(y = ess_placebo), color = "darkgreen", size = 1, linetype = "dashed") +
+  {if (!is.na(tp_analysis$beta_tipping))
+    geom_vline(xintercept = tp_analysis$beta_tipping, color = "red", linetype = "dotted", size = 1)} +
+  labs(title = "Effective Sample Size Components (Beta-Binomial Method)",
+       x = "Borrowing Weight (α)",
+       y = "Effective Sample Size",
+       fill = "",
+       color = "") +
+  theme_minimal() +
+  scale_x_continuous(labels = scales::percent_format(accuracy = 0.1)) +
+  theme(legend.position = "bottom")
+
+# Print the two plots separately
+print(ess_plot_rjags)
+print(ess_plot_beta)
+```
