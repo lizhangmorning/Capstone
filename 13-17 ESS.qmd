@@ -178,180 +178,148 @@ compute_Cj_exact <- function(a_j, b_j, x, n) {
 
 set.seed(123)
 
-# 成人组数据
+# 数据输入
 adult_placebo_n <- 494; adult_placebo_r <- 45
 adult_drug_n <- 509; adult_drug_r <- 375
-
-# 儿童组数据
 ped_placebo_n <- 6; ped_placebo_r <- 1
 ped_drug_n <- 30; ped_drug_r <- 15
 
-# 抽样次数
+# 参数设置
 n_samples <- 5000
+alpha_skeptical <- 1; beta_skeptical <- 1
 
-# 儿童组的无先验后验参数（仅用于计算方差基线）
-alpha_ped_placebo <- ped_placebo_r + 1
-beta_ped_placebo <- ped_placebo_n - ped_placebo_r + 1
-alpha_ped_drug <- ped_drug_r + 1
-beta_ped_drug <- ped_drug_n - ped_drug_r + 1
-
-# 无先验下的后验方差
-var_placebo_no_prior <- (alpha_ped_placebo * beta_ped_placebo) / 
-                        ((alpha_ped_placebo + beta_ped_placebo)^2 * (alpha_ped_placebo + beta_ped_placebo + 1))
-var_drug_no_prior <- (alpha_ped_drug * beta_ped_drug) /
-                     ((alpha_ped_drug + beta_ped_drug)^2 * (alpha_ped_drug + beta_ped_drug + 1))
-var_no_prior <- var_placebo_no_prior + var_drug_no_prior
-
-# 成人组的后验参数（作为先验来源）
+# 成人先验参数
 alpha_adult_placebo <- adult_placebo_r + 1
 beta_adult_placebo <- adult_placebo_n - adult_placebo_r + 1
 alpha_adult_drug <- adult_drug_r + 1
 beta_adult_drug <- adult_drug_n - adult_drug_r + 1
 
-# 怀疑性先验（均匀）
-alpha_skeptical <- 1
-beta_skeptical <- 1
+# 儿童无先验后验（用于ESS计算）
+alpha_ped_placebo <- ped_placebo_r + 1
+beta_ped_placebo <- ped_placebo_n - ped_placebo_r + 1
+alpha_ped_drug <- ped_drug_r + 1
+beta_ped_drug <- ped_drug_n - ped_drug_r + 1
 
-# 初始化结果表格
+# 无先验方差基准
+var_placebo_no_prior <- (alpha_ped_placebo * beta_ped_placebo) / 
+  ((alpha_ped_placebo + beta_ped_placebo)^2 * (alpha_ped_placebo + beta_ped_placebo + 1))
+var_drug_no_prior <- (alpha_ped_drug * beta_ped_drug) /
+  ((alpha_ped_drug + beta_ped_drug)^2 * (alpha_ped_drug + beta_ped_drug + 1))
+
+# 初始化结果表
 results <- data.frame(
   k = numeric(),
+  k_treat = numeric(),
+  k_control = numeric(),
   ci_lower = numeric(),
   ci_upper = numeric(),
   median_diff = numeric(),
   ESS_placebo = numeric(),
   ESS_drug = numeric(),
-  ESS_total = numeric(),
   prob_superior = numeric()
 )
 
-# 遍历 k ∈ [0, 1]
+# 主分析循环
 for (k in seq(0, 1, by = 0.002)) {
   
-  # 初始化先验混合权重
-  k0 <- c(k, 1 - k)
-
-  # 成分1（成人先验）参数
-  aj1 <- alpha_adult_drug
-  bj1 <- beta_adult_drug
-
-  # 成分2（怀疑性先验）参数
-  aj2 <- alpha_skeptical
-  bj2 <- beta_skeptical
-
-  # C1, C2: 每个成分的边际似然乘以似然（比例项）
-  C1 <- compute_Cj_exact(aj1, bj1, ped_drug_r, ped_drug_n)
-  C2 <- compute_Cj_exact(aj2, bj2, ped_drug_r, ped_drug_n)
-  Cj <- c(C1, C2)
-
-  # 更新混合权重
-  k1 <- k0 * Cj
-  k1 <- k1 / sum(k1)
-
-  # 形成混合先验参数（adult 与 skeptical）
-  alpha_prior_placebo <- k * alpha_adult_placebo + (1 - k) * alpha_skeptical
-  beta_prior_placebo <- k * beta_adult_placebo + (1 - k) * beta_skeptical
-  alpha_prior_drug <- k * alpha_adult_drug + (1 - k) * alpha_skeptical
-  beta_prior_drug <- k * beta_adult_drug + (1 - k) * beta_skeptical
-
-  # 后验A: 成人先验 + 儿童数据
-  alpha_post_adult_placebo <- alpha_adult_placebo + ped_placebo_r
-  beta_post_adult_placebo <- beta_adult_placebo + ped_placebo_n - ped_placebo_r
-  alpha_post_adult_drug <- alpha_adult_drug + ped_drug_r
-  beta_post_adult_drug <- beta_adult_drug + ped_drug_n - ped_drug_r
-
-  # 后验B: 怀疑先验 + 儿童数据
-  alpha_post_skeptical_placebo <- alpha_skeptical + ped_placebo_r
-  beta_post_skeptical_placebo <- beta_skeptical + ped_placebo_n - ped_placebo_r
-  alpha_post_skeptical_drug <- alpha_skeptical + ped_drug_r
-  beta_post_skeptical_drug <- beta_skeptical + ped_drug_n - ped_drug_r
-
-  # 从混合后的分布中进行采样
-  samples_adult_placebo <- rbeta(n_samples, alpha_post_adult_placebo, beta_post_adult_placebo)
-  samples_adult_drug <- rbeta(n_samples, alpha_post_adult_drug, beta_post_adult_drug)
-
-  samples_skeptical_placebo <- rbeta(n_samples, alpha_post_skeptical_placebo, beta_post_skeptical_placebo)
-  samples_skeptical_drug <- rbeta(n_samples, alpha_post_skeptical_drug, beta_post_skeptical_drug)
-
-  # 按权重混合采样
-  samples_placebo <- k * samples_adult_placebo + (1 - k) * samples_skeptical_placebo
-  samples_drug <- k1[1] * samples_adult_drug + k1[2] * samples_skeptical_drug
-
-  # 计算差异
+  # 1. 计算治疗组权重 ----
+  C_treat <- c(
+    compute_Cj_exact(alpha_adult_drug, beta_adult_drug, ped_drug_r, ped_drug_n),
+    compute_Cj_exact(alpha_skeptical, beta_skeptical, ped_drug_r, ped_drug_n)
+  )
+  k1_treat <- (k * C_treat[1]) / (k * C_treat[1] + (1-k) * C_treat[2])
+  
+  # 2. 计算对照组权重 ----
+  C_control <- c(
+    compute_Cj_exact(alpha_adult_placebo, beta_adult_placebo, ped_placebo_r, ped_placebo_n),
+    compute_Cj_exact(alpha_skeptical, beta_skeptical, ped_placebo_r, ped_placebo_n)
+  )
+  k1_control <- (k * C_control[1]) / (k * C_control[1] + (1-k) * C_control[2])
+  
+  # 3. 形成后验分布 ----
+  # 治疗组后验参数
+  alpha_post_drug_adult <- alpha_adult_drug + ped_drug_r
+  beta_post_drug_adult <- beta_adult_drug + ped_drug_n - ped_drug_r
+  alpha_post_drug_skeptical <- alpha_skeptical + ped_drug_r
+  beta_post_drug_skeptical <- beta_skeptical + ped_drug_n - ped_drug_r
+  
+  # 对照组后验参数
+  alpha_post_placebo_adult <- alpha_adult_placebo + ped_placebo_r
+  beta_post_placebo_adult <- beta_adult_placebo + ped_placebo_n - ped_placebo_r
+  alpha_post_placebo_skeptical <- alpha_skeptical + ped_placebo_r
+  beta_post_placebo_skeptical <- beta_skeptical + ped_placebo_n - ped_placebo_r
+  
+  # 4. 混合采样 ----
+  # 治疗组采样
+  mix_drug <- runif(n_samples) < k1_treat
+  samples_drug <- ifelse(
+    mix_drug,
+    rbeta(n_samples, alpha_post_drug_adult, beta_post_drug_adult),
+    rbeta(n_samples, alpha_post_drug_skeptical, beta_post_drug_skeptical)
+  )
+  
+  # 对照组采样
+  mix_placebo <- runif(n_samples) < k1_control
+  samples_placebo <- ifelse(
+    mix_placebo,
+    rbeta(n_samples, alpha_post_placebo_adult, beta_post_placebo_adult),
+    rbeta(n_samples, alpha_post_placebo_skeptical, beta_post_placebo_skeptical)
+  )
+  
+  # 5. 计算统计量 ----
   diff <- samples_drug - samples_placebo
-
-  # 计算统计量
-  ci_lower <- quantile(diff, 0.025)
-  ci_upper <- quantile(diff, 0.975)
-  median_diff <- median(diff)
-  prob_superior <- mean(diff > 0)
-
-  # ESS 计算
-  var_post_placebo <- var(samples_placebo)
-  var_post_drug <- var(samples_drug)
-  ess_placebo <- max(0, ped_placebo_n * (var_placebo_no_prior / var_post_placebo - 1))
-  ess_drug <- max(0, ped_drug_n * (var_drug_no_prior / var_post_drug - 1))
-  ess_total <- ess_placebo + ess_drug
-
-  # 存储结果
+  ci <- quantile(diff, c(0.025, 0.975))
+  
+  # 6. 存储结果 ----
   results <- rbind(results, data.frame(
     k = k,
-    ci_lower = ci_lower,
-    ci_upper = ci_upper,
-    median_diff = median_diff,
-    ESS_placebo = ess_placebo,
-    ESS_drug = ess_drug,
-    ESS_total = ess_total,
-    prob_superior = prob_superior
+    k_treat = k1_treat,
+    k_control = k1_control,
+    ci_lower = ci[1],
+    ci_upper = ci[2],
+    median_diff = median(diff),
+    ESS_placebo = max(0, ped_placebo_n * (var_placebo_no_prior / var(samples_placebo) - 1)),
+    ESS_drug = max(0, ped_drug_n * (var_drug_no_prior / var(samples_drug) - 1)),
+    prob_superior = mean(diff > 0)
   ))
 }
 
-# 寻找 tipping point
+# 结果分析 ----
 tipping_point <- results %>% 
   filter(ci_lower > 0) %>% 
   slice(1)
 
-# 输出结果
-cat("✅ Tipping Point Found:\n")
-cat("Adult Prior Weight (k):", tipping_point$k, "\n")
-cat("Posterior Difference (Drug - Placebo):", round(tipping_point$median_diff, 3), "\n")
-cat("95% CI: (", round(tipping_point$ci_lower, 3), ",", round(tipping_point$ci_upper, 3), ")\n")
+cat("Tipping Point Analysis:\n")
+cat("Initial Weight (k):", tipping_point$k, "\n")
+cat("Actual Weights Used:\n")
+cat("  Treatment:", round(tipping_point$k_treat, 3), "\n")
+cat("  Control:", round(tipping_point$k_control, 3), "\n")
+cat("Response Rate Difference:", round(tipping_point$median_diff, 3), "\n")
+cat("95% CI: [", round(tipping_point$ci_lower, 3), ",", round(tipping_point$ci_upper, 3), "]\n")
 cat("Pr(Drug > Placebo):", round(tipping_point$prob_superior, 3), "\n")
-cat("ESS from adult placebo:", round(tipping_point$ESS_placebo, 1), "\n")
-cat("ESS from adult drug:", round(tipping_point$ESS_drug, 1), "\n")
-cat("Total ESS (variance reduction):", round(tipping_point$ESS_total, 1), "\n")
+cat("ESS (Treatment):", round(tipping_point$ESS_drug, 1), "\n")
+cat("ESS (Control):", round(tipping_point$ESS_placebo, 1), "\n")
 
-# 可视化
+# 可视化 ----
 p1 <- ggplot(results, aes(x = k)) +
-  geom_line(aes(y = median_diff), color = "blue", size = 1.2) +
-  geom_ribbon(aes(ymin = ci_lower, ymax = ci_upper), fill = "skyblue", alpha = 0.3) +
-  geom_hline(yintercept = 0, linetype = "dashed", color = "red") +
-  geom_vline(xintercept = tipping_point$k, linetype = "dashed", color = "darkred") +
-  labs(
-    title = "Posterior Response Rate Difference (Drug - Placebo)",
-    x = "Adult Prior Weight (k)",
-    y = "Posterior Difference"
-  ) + theme_minimal()
+  geom_line(aes(y = median_diff), color = "blue") +
+  geom_ribbon(aes(ymin = ci_lower, ymax = ci_upper), alpha = 0.2, fill = "blue") +
+  geom_hline(yintercept = 0, linetype = "dashed") +
+  labs(title = "Treatment Effect (Difference in Response Rates)",
+       x = "Initial Weight (k)", y = "Difference")
 
 p2 <- ggplot(results, aes(x = k)) +
-  geom_line(aes(y = prob_superior), color = "purple", size = 1.2) +
-  geom_hline(yintercept = 0.975, linetype = "dashed", color = "red") +
-  geom_vline(xintercept = tipping_point$k, linetype = "dotted", color = "darkgreen") +
-  labs(
-    title = "Pr(Drug > Placebo) vs Adult Prior Weight",
-    x = "Adult Prior Weight (k)", 
-    y = "Pr(Drug > Placebo)"
-  ) + theme_minimal()
+  geom_line(aes(y = k_treat, color = "Treatment")) +
+  geom_line(aes(y = k_control, color = "Control")) +
+  scale_color_manual(values = c("Treatment" = "red", "Control" = "green")) +
+  labs(title = "Actual Weights Used", x = "Initial Weight (k)", y = "Posterior Weight")
 
 p3 <- ggplot(results, aes(x = k)) +
-  geom_line(aes(y = ESS_total), color = "darkorange", size = 1.2) +
-  geom_vline(xintercept = tipping_point$k, linetype = "dashed", color = "red") +
-  labs(
-    title = "Total Effective Sample Size (Variance Reduction)",
-    x = "Adult Prior Weight (k)",
-    y = "Total ESS"
-  ) + theme_minimal()
+  geom_line(aes(y = ESS_drug, color = "Treatment")) +
+  geom_line(aes(y = ESS_placebo, color = "Control")) +
+  scale_color_manual(values = c("Treatment" = "red", "Control" = "green")) +
+  labs(title = "Effective Sample Size", x = "Initial Weight (k)", y = "ESS")
 
-# 合并图表
 grid.arrange(p1, p2, p3, ncol = 1)
 
 
