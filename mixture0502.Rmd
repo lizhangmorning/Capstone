@@ -6,26 +6,26 @@ date: "2025-05-03"
 
 ```{r}
 # ======================
-# 1. 数据定义
+# 1. Data Definition
 # ======================
 
-# 儿童数据
+# Pediatric data
 child_data <- list(
   treat = list(y = 15, n = 30),
   control = list(y = 1, n = 6)
 )
 
-# 成人数据
+# Adult data
 adult_data <- list(
   treat = list(y = 375, n = 509),
   control = list(y = 45, n = 494)
 )
 
-# 平坦先验参数
+# Flat (non-informative) prior
 flat_prior <- list(a = 1, b = 1)
 
 # ======================
-# 2. 边际似然函数
+# 2. Marginal Likelihood Function
 # ======================
 
 compute_C <- function(a_prior, b_prior, y_data, n_data) {
@@ -33,52 +33,52 @@ compute_C <- function(a_prior, b_prior, y_data, n_data) {
 }
 
 # ======================
-# 3. 主函数
+# 3. Main Sensitivity Function
 # ======================
 
-run_sensitivity_analysis <- function(weights = seq(0, 1, 0.01)) {
+run_sensitivity_analysis <- function(weights = seq(0, 1, 0.005)) {
   results <- data.frame(
     weight = weights,
     median_or = NA,
-    lower_95 = NA,
-    upper_95 = NA,
-    post_var = NA,
-    ess_total = NA,
-    ess_treat = NA,
-    ess_control = NA,
+    lower_95_or = NA,
+    upper_95_or = NA,
+    ess_total_or = NA,
+    ess_treat_or = NA,
+    ess_control_or = NA,
+    median_rr = NA,
+    lower_95_rr = NA,
+    upper_95_rr = NA,
+    ess_total_rr = NA,
+    ess_treat_rr = NA,
+    ess_control_rr = NA,
     k_treat = NA,
     k_control = NA
   )
-  
+
   set.seed(123)
-  # 无借用（平坦先验）计算基准方差 & 各arm方差
+  
+  # No-borrowing posteriors
   p1_noborrow <- rbeta(1e5, flat_prior$a + child_data$treat$y,
                        flat_prior$b + child_data$treat$n - child_data$treat$y)
   p2_noborrow <- rbeta(1e5, flat_prior$a + child_data$control$y,
                        flat_prior$b + child_data$control$n - child_data$control$y)
   or_noborrow <- (p1_noborrow / (1 - p1_noborrow)) / (p2_noborrow / (1 - p2_noborrow))
+  rr_noborrow <- p1_noborrow - p2_noborrow
   log_or_var_noborrow <- var(log(or_noborrow))
-
-  # 各arm无借用下的方差
+  var_rr_noborrow <- var(rr_noborrow)
   var_p1_noborrow <- var(log(p1_noborrow / (1 - p1_noborrow)))
   var_p2_noborrow <- var(log(p2_noborrow / (1 - p2_noborrow)))
-  
-  # 成人先验参数
+
+  # Informative priors from adult data
   prior_params <- list(
-    treat = list(
-      a = adult_data$treat$y + 1,
-      b = adult_data$treat$n - adult_data$treat$y + 1
-    ),
-    control = list(
-      a = adult_data$control$y + 1,
-      b = adult_data$control$n - adult_data$control$y + 1
-    )
+    treat = list(a = adult_data$treat$y + 1, b = adult_data$treat$n - adult_data$treat$y + 1),
+    control = list(a = adult_data$control$y + 1, b = adult_data$control$n - adult_data$control$y + 1)
   )
-  
+
   for (i in seq_along(weights)) {
     w <- weights[i]
-    
-    # 治疗组
+
+    # Posterior weights (kappa)
     C_treat <- list(
       info = compute_C(prior_params$treat$a, prior_params$treat$b,
                        child_data$treat$y, child_data$treat$n),
@@ -86,16 +86,7 @@ run_sensitivity_analysis <- function(weights = seq(0, 1, 0.01)) {
                        child_data$treat$y, child_data$treat$n)
     )
     k_treat <- (w * C_treat$info) / (w * C_treat$info + (1 - w) * C_treat$flat)
-    
-    post_p1 <- ifelse(
-      runif(1e5) < k_treat,
-      rbeta(1e5, prior_params$treat$a + child_data$treat$y,
-            prior_params$treat$b + child_data$treat$n - child_data$treat$y),
-      rbeta(1e5, flat_prior$a + child_data$treat$y,
-            flat_prior$b + child_data$treat$n - child_data$treat$y)
-    )
-    
-    # 对照组
+
     C_control <- list(
       info = compute_C(prior_params$control$a, prior_params$control$b,
                        child_data$control$y, child_data$control$n),
@@ -103,7 +94,15 @@ run_sensitivity_analysis <- function(weights = seq(0, 1, 0.01)) {
                        child_data$control$y, child_data$control$n)
     )
     k_control <- (w * C_control$info) / (w * C_control$info + (1 - w) * C_control$flat)
-    
+
+    # Posterior samples
+    post_p1 <- ifelse(
+      runif(1e5) < k_treat,
+      rbeta(1e5, prior_params$treat$a + child_data$treat$y,
+            prior_params$treat$b + child_data$treat$n - child_data$treat$y),
+      rbeta(1e5, flat_prior$a + child_data$treat$y,
+            flat_prior$b + child_data$treat$n - child_data$treat$y)
+    )
     post_p2 <- ifelse(
       runif(1e5) < k_control,
       rbeta(1e5, prior_params$control$a + child_data$control$y,
@@ -111,79 +110,137 @@ run_sensitivity_analysis <- function(weights = seq(0, 1, 0.01)) {
       rbeta(1e5, flat_prior$a + child_data$control$y,
             flat_prior$b + child_data$control$n - child_data$control$y)
     )
-    
-    # OR计算
+
+    # OR and RR calculations
     or_post <- (post_p1 / (1 - post_p1)) / (post_p2 / (1 - post_p2))
+    rr_post <- post_p1 - post_p2
     log_or_var <- var(log(or_post))
-    
-    # ESS估计
-    ess_total <- (log_or_var_noborrow / log_or_var - 1) * (child_data$treat$n + child_data$control$n)
-    ess_treat <- (var_p1_noborrow / var(log(post_p1 / (1 - post_p1))) - 1) * child_data$treat$n
-    ess_control <- (var_p2_noborrow / var(log(post_p2 / (1 - post_p2))) - 1) * child_data$control$n
-    
-    # 存储结果
+    var_rr <- var(rr_post)
+
+    # ESS for OR and RR
+    ess_total_or <- (log_or_var_noborrow / log_or_var - 1) * (child_data$treat$n + child_data$control$n)
+    ess_treat_or <- (var_p1_noborrow / var(log(post_p1 / (1 - post_p1))) - 1) * child_data$treat$n
+    ess_control_or <- (var_p2_noborrow / var(log(post_p2 / (1 - post_p2))) - 1) * child_data$control$n
+
+    ess_total_rr <- (var_rr_noborrow / var_rr - 1) * (child_data$treat$n + child_data$control$n)
+    ess_treat_rr <- (var(p1_noborrow) / var(post_p1) - 1) * child_data$treat$n
+    ess_control_rr <- (var(p2_noborrow) / var(post_p2) - 1) * child_data$control$n
+
+    # Store results
     results[i, ] <- c(
       w,
       median(or_post),
       quantile(or_post, 0.025),
       quantile(or_post, 0.975),
-      log_or_var,
-      ess_total,
-      ess_treat,
-      ess_control,
+      ess_total_or,
+      ess_treat_or,
+      ess_control_or,
+      median(rr_post),
+      quantile(rr_post, 0.025),
+      quantile(rr_post, 0.975),
+      ess_total_rr,
+      ess_treat_rr,
+      ess_control_rr,
       k_treat,
       k_control
     )
   }
-  
-  # 识别 tipping point
-  tipping_idx <- which(results$lower_95 > 1)[1]
-  if (!is.na(tipping_idx)) {
-    tipping_point <- results[tipping_idx, ]
-    cat("✅ Tipping Point Found (first lower_95 > 1):\n")
-    cat("  ➤ Weight (w*):", tipping_point$weight, "\n")
-    cat("  ➤ k_treat =", round(tipping_point$k_treat, 3),
-        "| k_control =", round(tipping_point$k_control, 3), "\n")
-    cat("  ➤ ESS_treat =", round(tipping_point$ess_treat, 2),
-        "| ESS_control =", round(tipping_point$ess_control, 2),
-        "| ESS_total =", round(tipping_point$ess_total, 2), "\n")
+
+  # Identify tipping points
+  or_tip_idx <- which(results$lower_95_or > 1)[1]
+  rr_tip_idx <- which(results$lower_95_rr > 0)[1]
+
+  # Print results
+  cat("\n========== Tipping Point Summary ==========\n")
+  if (!is.na(or_tip_idx)) {
+    or_row <- results[or_tip_idx, ]
+    cat("✅ OR tipping point (lower 95% > 1):\n")
+    cat(sprintf("Weight: %.2f\n", or_row$weight))
+    cat(sprintf("Median OR: %.2f (95%% CI: %.2f – %.2f)\n", or_row$median_or, or_row$lower_95_or, or_row$upper_95_or))
+    cat(sprintf("Total ESS (OR): %.1f, Treat: %.1f, Control: %.1f\n\n",
+                or_row$ess_total_or, or_row$ess_treat_or, or_row$ess_control_or))
+    cat("  ➤ k_treat =", or_row$k_treat,  
+        "| k_control =", or_row$k_control, "\n")
   } else {
-    cat("⚠️ No tipping point found where lower_95 > 1.\n")
+    cat("❌ No OR tipping point (95% CI never exceeds 1).\n\n")
   }
-  
-  return(results)
+
+  if (!is.na(rr_tip_idx)) {
+    rr_row <- results[rr_tip_idx, ]
+    cat("✅ RR tipping point (lower 95% > 0):\n")
+    cat(sprintf("Weight: %.2f\n", rr_row$weight))
+    cat(sprintf("Median RR: %.3f (95%% CI: %.3f – %.3f)\n", rr_row$median_rr, rr_row$lower_95_rr, rr_row$upper_95_rr))
+    cat(sprintf("Total ESS (RR): %.1f, Treat: %.1f, Control: %.1f\n",
+                rr_row$ess_total_rr, rr_row$ess_treat_rr, rr_row$ess_control_rr))
+    cat("  ➤ k_treat =", or_row$k_treat,  
+        "| k_control =", or_row$k_control, "\n")
+  } else {
+    cat("❌ No RR tipping point (95% CI never exceeds 0).\n")
+  }
+  cat("===========================================\n")
+
+  return(list(results = results, or_idx = or_tip_idx, rr_idx = rr_tip_idx))
 }
 
 # ======================
-# 4. 运行分析 + 可视化
+# 4. Run Analysis and Plot
 # ======================
 
-results <- run_sensitivity_analysis(seq(0, 1, 0.01))
+res <- run_sensitivity_analysis()
+results <- res$results
+or_idx <- res$or_idx
+rr_idx <- res$rr_idx
 
-# 可选：作图
 library(ggplot2)
 library(patchwork)
 
+# Plot: OR
 p1 <- ggplot(results, aes(x = weight)) +
   geom_line(aes(y = median_or), color = "blue") +
-  geom_ribbon(aes(ymin = lower_95, ymax = upper_95), alpha = 0.2, fill = "blue") +
-  labs(x = "Weight (w)", y = "Odds Ratio", title = "Posterior OR with Borrowing")
+  geom_ribbon(aes(ymin = lower_95_or, ymax = upper_95_or), alpha = 0.2, fill = "blue") +
+  labs(x = "Weight (w)", y = "Odds Ratio", title = "Posterior OR with Borrowing") +
+  geom_vline(xintercept = results$weight[or_idx], linetype = "dashed", color = "red") +
+  annotate("text", x = results$weight[or_idx], y = max(results$upper_95_or, na.rm = TRUE),
+           label = "OR Tipping Point", color = "red", vjust = -0.5)
 
-p2 <- ggplot(results, aes(x = weight, y = ess_total)) +
-  geom_line(color = "red") +
-  labs(x = "Weight (w)", y = "ESS", title = "Total Effective Sample Size")
+# Plot: RD
+p2 <- ggplot(results, aes(x = weight)) +
+  geom_line(aes(y = median_rr), color = "darkgreen") +
+  geom_ribbon(aes(ymin = lower_95_rr, ymax = upper_95_rr), alpha = 0.2, fill = "green") +
+  labs(x = "Weight (w)", y = "Risk Difference", title = "Posterior Risk Difference (RD)") +
+  geom_vline(xintercept = results$weight[rr_idx], linetype = "dashed", color = "orange") +
+  annotate("text", x = results$weight[rr_idx], y = max(results$upper_95_rr, na.rm = TRUE),
+           label = "RD Tipping Point", color = "orange", vjust = -0.5)
 
+# ESS plot
 p3 <- ggplot(results, aes(x = weight)) +
-  geom_line(aes(y = k_treat, color = "Treatment")) +
-  geom_line(aes(y = k_control, color = "Control")) +
-  scale_color_manual(values = c("Treatment" = "darkgreen", "Control" = "purple")) +
-  labs(x = "Weight (w)", y = "Posterior Weight", title = "Component Weights") +
+  geom_line(aes(y = ess_total_or, color = "OR")) +
+  geom_line(aes(y = ess_total_rr, color = "RD")) +
+  geom_vline(xintercept = or_tip$weight, linetype = "dashed", color = "blue") +
+  geom_vline(xintercept = rr_tip$weight, linetype = "dashed", color = "orange") +
+  scale_color_manual(values = c("OR" = "blue", "RD" = "darkorange")) +
+  labs(x = "Weight (w)", y = "Effective Sample Size", title = "Total ESS") +
   theme(legend.position = "top")
 
-(p1 + p2) / p3
+p1
+p2
+p3
+
 
 ```
+```
 
+========== Tipping Point Summary ==========
+✅ OR tipping point (lower 95% > 1):
+Weight: 0.45
+Median OR: 8.75 (95% CI: 1.00 – 29.57)
+Total ESS (OR): 12.8, Treat: -10.0, Control: 3.7
 
-
+  ➤ k_treat = 0.0925073 | k_control = 0.6602572 
+✅ RR tipping point (lower 95% > 0):
+Weight: 0.45
+Median RR: 0.388 (95% CI: 0.001 – 0.640)
+Total ESS (RR): 7.8, Treat: -9.3, Control: 4.0
+  ➤ k_treat = 0.0925073 | k_control = 0.6602572 
+===========================================
 
