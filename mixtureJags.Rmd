@@ -1,87 +1,101 @@
 ---
-title: "Untitled"
+title: "Mixture Priors using Rjags"
 output: html_document
 date: "2025-05-03"
 ---
 
 ```{r}
-library(rjags)
-library(ggplot2)
-library(gridExtra)
-library(dplyr)
-library(coda)
+# Load required libraries
+library(rjags)    
+library(ggplot2)  
+library(gridExtra) 
+library(dplyr)    
+library(coda)     
 
-# 数据输入
-adult_placebo_n <- 494; adult_placebo_r <- 45
+# ---------------------
+# Data Input
+# ---------------------
+# Adult data
+adult_placebo_n <- 494; adult_placebo_r <- 45  
 adult_drug_n <- 509; adult_drug_r <- 375
+
+# Pediatric data 
 ped_placebo_n <- 6; ped_placebo_r <- 1
 ped_drug_n <- 30; ped_drug_r <- 15
 
-# 参数设置
-n_samples <- 50000  # MCMC样本量
-n_burn <- 5000      # 预热期
-n_chains <- 3       # 链数量
-alpha_skeptical <- 1; beta_skeptical <- 1
+# ---------------------
+# Parameter Settings
+# ---------------------
+n_samples <- 50000  
+n_burn <- 5000      
+n_chains <- 3       
+alpha_skeptical <- 1; beta_skeptical <- 1  # Parameters for skeptical prior (Beta(1,1))
 
-# 成人先验参数
+# Calculate adult prior parameters
+# Using Beta(alpha, beta) where alpha = successes + 1, beta = failures + 1
 alpha_adult_placebo <- adult_placebo_r + 1
 beta_adult_placebo <- adult_placebo_n - adult_placebo_r + 1
 alpha_adult_drug <- adult_drug_r + 1
 beta_adult_drug <- adult_drug_n - adult_drug_r + 1
 
-# 儿童无先验后验（用于ESS计算）
-alpha_ped_placebo <- ped_placebo_r + 1
-beta_ped_placebo <- ped_placebo_n - ped_placebo_r + 1
-alpha_ped_drug <- ped_drug_r + 1
-beta_ped_drug <- ped_drug_n - ped_drug_r + 1
-
-# 无先验方差基准
-var_placebo_no_prior <- (alpha_ped_placebo * beta_ped_placebo) / 
-  ((alpha_ped_placebo + beta_ped_placebo)^2 * (alpha_ped_placebo + beta_ped_placebo + 1))
-var_drug_no_prior <- (alpha_ped_drug * beta_ped_drug) /
-  ((alpha_ped_drug + beta_ped_drug)^2 * (alpha_ped_drug + beta_ped_drug + 1))
-
-# 创建JAGS模型模板
+# ---------------------
+# JAGS Model Definition
+# ---------------------
+# Bayesian model using mixture priors:
+# - Adult data prior (informative)
+# - Skeptical prior (non-informative)
+# Weighted by parameter k (0-1)
 model_template <- "
 model {
-  # 治疗组混合先验模型
-  p_drug_adult ~ dbeta(alpha_adult_drug, beta_adult_drug)
-  p_drug_skeptical ~ dbeta(alpha_skeptical, beta_skeptical)
-  z_drug ~ dbern(k)  # 使用相同的k作为初始权重
-  p_drug <- z_drug * p_drug_adult + (1-z_drug) * p_drug_skeptical
+  # prior model
+  # Drug prior 
+  p_drug_adult ~ dbeta(alpha_adult_drug, beta_adult_drug)  # Adult data prior
+  p_drug_skeptical ~ dbeta(alpha_skeptical, beta_skeptical) # Skeptical prior
+  z_drug ~ dbern(k)  # Binary indicator for which prior to use
+  p_drug <- z_drug * p_drug_adult + (1-z_drug) * p_drug_skeptical  # Mixture
   
-  # 安慰剂组混合先验模型
+  # Placebo prior
   p_placebo_adult ~ dbeta(alpha_adult_placebo, beta_adult_placebo)
   p_placebo_skeptical ~ dbeta(alpha_skeptical, beta_skeptical)
-  z_placebo ~ dbern(k)  # 使用相同的k作为初始权重
+  z_placebo ~ dbern(k)
   p_placebo <- z_placebo * p_placebo_adult + (1-z_placebo) * p_placebo_skeptical
-  
-  # 似然函数
-  r_drug ~ dbin(p_drug, n_drug)
+
+  # Likelihood functions for pediatric data
+  r_drug ~ dbin(p_drug, n_drug)      
   r_placebo ~ dbin(p_placebo, n_placebo)
-  
-  # 计算效应量差异
+
+  # Treatment effect (difference in response rates)
   effect_diff <- p_drug - p_placebo
 }
 "
 
-# 初始化结果表
-results <- data.frame(
-  k = numeric(),
-  z_drug_mean = numeric(),
-  z_placebo_mean = numeric(),
-  ci_lower = numeric(),
-  ci_upper = numeric(),
-  median_diff = numeric(),
-  ESS_placebo = numeric(),
-  ESS_drug = numeric(),
-  prob_superior = numeric()
-)
+# ---------------------
+# Function to Get Variance with No Prior (k=0)
+# ---------------------
+# This establishes baseline variance when only using skeptical prior
+get_variance_no_prior <- function(model_template, jags_data_template, 
+                                 n_chains = 3, n_burn = 5000, n_samples = 50000) {
+  jags_data <- c(jags_data_template, list(k = 0))  # Set k=0 (only skeptical prior)
+  jags_model <- jags.model(textConnection(model_template), 
+                          data = jags_data, 
+                          n.chains = n_chains, 
+                          quiet = TRUE)
+  update(jags_model, n.iter = n_burn)  
+  samples <- coda.samples(jags_model, 
+                         variable.names = c("p_drug", "p_placebo"), 
+                         n.iter = n_samples)
+  all_samples <- do.call(rbind, samples)  
+  
+  # Return variances for drug and placebo groups
+  list(
+    var_placebo = var(all_samples[, "p_placebo"]),
+    var_drug = var(all_samples[, "p_drug"])
+  )
+}
 
-# 主分析循环
-k_values <- seq(0, 1, by = 0.1)  # 初始较大步长
-
-# 准备数据列表（不包含k，将在循环中添加）
+# ---------------------
+# Prepare Data Template for JAGS
+# ---------------------
 jags_data_template <- list(
   alpha_adult_drug = alpha_adult_drug,
   beta_adult_drug = beta_adult_drug,
@@ -89,169 +103,133 @@ jags_data_template <- list(
   beta_adult_placebo = beta_adult_placebo,
   alpha_skeptical = alpha_skeptical,
   beta_skeptical = beta_skeptical,
-  r_drug = ped_drug_r,
-  n_drug = ped_drug_n,
-  r_placebo = ped_placebo_r,
-  n_placebo = ped_placebo_n
+  r_drug = ped_drug_r,     
+  n_drug = ped_drug_n,    
+  r_placebo = ped_placebo_r, 
+  n_placebo = ped_placebo_n  
 )
-  
+
+# ---------------------
+# Calculate Baseline Variance (k=0)
+# ---------------------
+variances_no_prior <- get_variance_no_prior(
+  model_template = model_template,
+  jags_data_template = jags_data_template,
+  n_chains = n_chains,
+  n_burn = n_burn,
+  n_samples = n_samples
+)
+var_placebo_no_prior <- variances_no_prior$var_placebo
+var_drug_no_prior <- variances_no_prior$var_drug
+
+# ---------------------
+# Initialize Results Data Frame
+# ---------------------
+results <- data.frame(
+  k = numeric(),            
+  z_drug_mean = numeric(),  
+  z_placebo_mean = numeric(), 
+  ci_lower = numeric(),     
+  ci_upper = numeric(),     
+  median_diff = numeric(),  
+  ESS_placebo = numeric(), 
+  ESS_drug = numeric(),     
+  prob_superior = numeric() 
+)
+
+# ---------------------
+# Main Analysis: Grid Search Over k Values
+# ---------------------
+k_values <- seq(0, 1, by = 0.01)  
+
 for (k in k_values) {
-  # 添加当前k值到数据列表
   jags_data <- c(jags_data_template, list(k = k))
   
-  # 初始化模型
-  jags_model <- jags.model(
-    textConnection(model_template),
-    data = jags_data,
-    n.chains = n_chains
-  )
+  jags_model <- jags.model(textConnection(model_template), 
+                          data = jags_data, 
+                          n.chains = n_chains, 
+                          quiet = TRUE)
+  update(jags_model, n.iter = n_burn)  
   
-  # 预热
-  update(jags_model, n.iter = n_burn)
+  # Draw samples from posterior
+  jags_samples <- coda.samples(jags_model, 
+                             variable.names = c("p_drug", "p_placebo", "effect_diff", "z_drug", "z_placebo"), 
+                             n.iter = n_samples)
+  all_samples <- do.call(rbind, jags_samples)  # Combine chains
   
-  # 生成样本
-  jags_samples <- coda.samples(
-    jags_model,
-    variable.names = c("p_drug", "p_placebo", "effect_diff", "z_drug", "z_placebo"),
-    n.iter = n_samples
-  )
+  # Calculate effective sample size (ESS) 
+  # ESS = n_ped * (var_no_prior/var_current - 1)
+  # Where n_ped is pediatric sample size and var_no_prior is k=0 variance
   
-  # 合并链
-  all_samples <- do.call(rbind, jags_samples)
-  
-  # 提取样本
-  samples_drug <- all_samples[, "p_drug"]
-  samples_placebo <- all_samples[, "p_placebo"]
-  diff_samples <- all_samples[, "effect_diff"]
-  z_drug_samples <- all_samples[, "z_drug"]
-  z_placebo_samples <- all_samples[, "z_placebo"]
-  
-  # 计算统计量
-  ci <- quantile(diff_samples, c(0.025, 0.975))
-  
-  # 存储结果
+  # Store results
   results <- rbind(results, data.frame(
     k = k,
-    z_drug_mean = mean(z_drug_samples),    # 平均后验先验选择概率（治疗组）
-    z_placebo_mean = mean(z_placebo_samples), # 平均后验先验选择概率（安慰剂组）
-    ci_lower = ci[1],
-    ci_upper = ci[2],
-    median_diff = median(diff_samples),
-    ESS_placebo = ped_placebo_n * (var_placebo_no_prior / var(samples_placebo) - 1),
-    ESS_drug = ped_drug_n * (var_drug_no_prior / var(samples_drug) - 1),
-    prob_superior = mean(diff_samples > 0)
+    z_drug_mean = mean(all_samples[, "z_drug"]),
+    z_placebo_mean = mean(all_samples[, "z_placebo"]),
+    ci_lower = quantile(all_samples[, "effect_diff"], 0.025),
+    ci_upper = quantile(all_samples[, "effect_diff"], 0.975),
+    median_diff = median(all_samples[, "effect_diff"]),
+    ESS_placebo = ped_placebo_n * (var_placebo_no_prior / var(all_samples[, "p_placebo"]) - 1),
+    ESS_drug = ped_drug_n * (var_drug_no_prior / var(all_samples[, "p_drug"]) - 1),
+    prob_superior = mean(all_samples[, "effect_diff"] > 0)
   ))
   
-  # 输出进度
-  cat("Completed k =", k, "\n")
+  cat("Completed analysis for k =", k, "\n")
 }
 
-# 检查是否有临界点区域需要精细搜索
-if(any(results$ci_lower > 0)) {
-  # 找到第一个统计显著的点之前的一个点
-  critical_index <- which(results$ci_lower > 0)[1]
-  
-  if(critical_index > 1) {
-    # 在前两个点之间进行更细致的搜索
-    k_before <- results$k[critical_index - 1]
-    k_after <- results$k[critical_index]
-    
-    # 细化k值列表
-    fine_k_values <- seq(k_before, k_after, by = 0.01)
-    fine_k_values <- fine_k_values[fine_k_values != k_before & fine_k_values != k_after]
-    
-    # 在这个范围内进行精细搜索
-    for (k in fine_k_values) {
-      # 添加当前k值到数据列表
-      jags_data <- c(jags_data_template, list(k = k))
-      
-      # 初始化模型
-      jags_model <- jags.model(
-        textConnection(model_template),
-        data = jags_data,
-        n.chains = n_chains
-      )
-      
-      # 预热
-      update(jags_model, n.iter = n_burn)
-      
-      # 生成样本
-      jags_samples <- coda.samples(
-        jags_model,
-        variable.names = c("p_drug", "p_placebo", "effect_diff", "z_drug", "z_placebo"),
-        n.iter = n_samples
-      )
-      
-      # 合并链
-      all_samples <- do.call(rbind, jags_samples)
-      
-      # 提取样本
-      samples_drug <- all_samples[, "p_drug"]
-      samples_placebo <- all_samples[, "p_placebo"]
-      diff_samples <- all_samples[, "effect_diff"]
-      z_drug_samples <- all_samples[, "z_drug"]
-      z_placebo_samples <- all_samples[, "z_placebo"]
-      
-      # 计算统计量
-      ci <- quantile(diff_samples, c(0.025, 0.975))
-      
-      # 存储结果
-      results <- rbind(results, data.frame(
-        k = k,
-        z_drug_mean = mean(z_drug_samples),
-        z_placebo_mean = mean(z_placebo_samples),
-        ci_lower = ci[1],
-        ci_upper = ci[2],
-        median_diff = median(diff_samples),
-        ESS_placebo = ped_placebo_n * (var_placebo_no_prior / var(samples_placebo) - 1),
-        ESS_drug = ped_drug_n * (var_drug_no_prior / var(samples_drug) - 1),
-        prob_superior = mean(diff_samples > 0)
-      ))
-      
-      cat("Completed fine-tuning k =", k, "\n")
-    }
-  }
-}
-
-# 按k值排序结果
+# ---------------------
+# Identify Tipping Point
+# ---------------------
+# Sort results by k value
 results <- results[order(results$k), ]
 
-# 结果分析
-tipping_point <- results %>% 
-  filter(ci_lower > 0) %>% 
-  slice(1)
+# Find the smallest k where 95% CI lower bound > 0
+tipping_point <- results %>% filter(ci_lower > 0) %>% slice(1)
 
-cat("Tipping Point Analysis:\n")
-cat("Initial Weight (k):", tipping_point$k, "\n")
-cat("Posterior Probability of Adult Prior Used:\n")
-cat("  Treatment:", round(tipping_point$z_drug_mean, 3), "\n")
-cat("  Control:", round(tipping_point$z_placebo_mean, 3), "\n")
-cat("Response Rate Difference:", round(tipping_point$median_diff, 3), "\n")
-cat("95% CI: [", round(tipping_point$ci_lower, 3), ",", round(tipping_point$ci_upper, 3), "]\n")
-cat("Pr(Drug > Placebo):", round(tipping_point$prob_superior, 3), "\n")
-cat("ESS (Treatment):", round(tipping_point$ESS_drug, 1), "\n")
-cat("ESS (Control):", round(tipping_point$ESS_placebo, 1), "\n")
+# Print tipping point results
+cat("\nTipping Point Analysis:\n")
+cat("Critical Weight (k):", tipping_point$k, "\n")
+cat("Posterior Probability of Adult Prior Being Used:\n")
+cat("  Treatment Group:", round(tipping_point$z_drug_mean, 3), "\n")
+cat("  Control Group:", round(tipping_point$z_placebo_mean, 3), "\n")
+cat("Median Response Rate Difference:", round(tipping_point$median_diff, 3), "\n")
+cat("95% Credible Interval: [", round(tipping_point$ci_lower, 3), ",", 
+    round(tipping_point$ci_upper, 3), "]\n")
+cat("Probability Drug Superior to Placebo:", round(tipping_point$prob_superior, 3), "\n")
+cat("Effective Sample Size (Treatment):", round(tipping_point$ESS_drug, 1), "\n")
+cat("Effective Sample Size (Control):", round(tipping_point$ESS_placebo, 1), "\n")
 
-# 可视化
+# ---------------------
+# Visualization
+# ---------------------
+# Plot 1: Treatment effect with credible interval
 p1 <- ggplot(results, aes(x = k)) +
   geom_line(aes(y = median_diff), color = "blue") +
   geom_ribbon(aes(ymin = ci_lower, ymax = ci_upper), alpha = 0.2, fill = "blue") +
   geom_hline(yintercept = 0, linetype = "dashed") +
-  labs(title = "Treatment Effect (Difference in Response Rates)",
-       x = "Initial Weight (k)", y = "Difference")
+  labs(title = "Treatment Effect (Difference in Response Rates)", 
+       x = "Prior Weight (k)", 
+       y = "Difference")
 
+# Plot 2: Probability of using adult prior
 p2 <- ggplot(results, aes(x = k)) +
   geom_line(aes(y = z_drug_mean, color = "Treatment")) +
   geom_line(aes(y = z_placebo_mean, color = "Control")) +
   scale_color_manual(values = c("Treatment" = "red", "Control" = "green")) +
-  labs(title = "Posterior Probability of Adult Prior Used", x = "Initial Weight (k)", y = "Probability")
+  labs(title = "Posterior Probability of Adult Prior Being Used", 
+       x = "Prior Weight (k)", 
+       y = "Probability")
 
+# Plot 3: Effective sample size
 p3 <- ggplot(results, aes(x = k)) +
   geom_line(aes(y = ESS_drug, color = "Treatment")) +
   geom_line(aes(y = ESS_placebo, color = "Control")) +
   scale_color_manual(values = c("Treatment" = "red", "Control" = "green")) +
-  labs(title = "Effective Sample Size", x = "Initial Weight (k)", y = "ESS")
+  labs(title = "Effective Sample Size Contribution", 
+       x = "Prior Weight (k)", 
+       y = "ESS")
 
+# Arrange all plots vertically
 grid.arrange(p1, p2, p3, ncol = 1)
 ```
 
