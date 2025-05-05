@@ -4,21 +4,21 @@ library(here)
 library(dplyr)
 library(ggplot2)
 
-# 载入数据
+# Load data
 source(here("R", "data_loading", "load_data.R"))
 
-# 儿科数据清洗
+# Pediatric data cleaning
 pediatric_clean <- pediatric_trials |>
   filter(!is.na(n) & !is.na(N)) |>
   filter(Trial %in% c("Pooled")) |>
   mutate(Source = "Pediatric")
 
-# 成人数据清洗
+# Adult data cleaning
 adult_clean <- adult_trials |>
   filter(Trial %in% c("Pooled")) |>
   mutate(Source = "Adult")
 
-# 合并数据，并生成 trial index
+# Combined data and generate trial index
 combined_data <- bind_rows(pediatric_clean, adult_clean) |>
   mutate(
     group = ifelse(Group == "DrugA", 1, 0),
@@ -28,15 +28,13 @@ combined_data <- bind_rows(pediatric_clean, adult_clean) |>
   )
 
 
-#新增——————————————————————————————————————————
-# Adult placebo 信息量
+#------------------------------------------------------
 n_adult <- 494
 p_adult <- 0.091
 info_per_subject <- n_adult * p_adult * (1 - p_adult)
 
-# 新建 ESS 向量
 ess_prior_vec <- c()
-#新增——————————————————————————————————————————————
+#——————————————————————————————————————————————
 
 
 
@@ -88,10 +86,10 @@ for (s in seq(1, 2, by = 0.1)){
 }
   
 
-# 添加显著性判断列
+# True or False
 tipping_results$Significant <- tipping_results$OR_lower > 1
 
-# 绘图
+# plotting
 ggplot(tipping_results, aes(x = fixed_sigma_alpha, y = OR_median, color = Significant)) +
   geom_point(size = 3) +
   geom_errorbar(aes(ymin = OR_lower, ymax = OR_upper), width = 0.1, linewidth = 1) +
@@ -126,16 +124,16 @@ print(ess_beta2)
 ess_selected <- effectiveSize(samples)[c("beta[1]", "beta[2]", "mu_alpha", "sigma_alpha")]
 print(ess_selected)
 
-# ————————————————————————————————————————————————等值算法——————————————————————
+# ————————————————————————————————————————————————calculate——————————————————————
 # Adult placebo arm
 n_adult <- 494
 p_adult <- 0.091
 var_likelihood <- 1 / (n_adult * p_adult * (1 - p_adult))
 
-# 一系列 sigma_alpha
+# sigma_alpha
 sigma_alpha_seq <- c(0.05, 0.1, 0.2, 0.5, 1, 2, 5, 10)
 
-# 计算 prior variance 和 ESS
+# calculate prior variance 和 ESS
 ess_table <- data.frame(
   sigma_alpha = sigma_alpha_seq,
   prior_variance = sigma_alpha_seq^2,
@@ -146,7 +144,7 @@ print(ess_table)
 
 #————————————————————————————————————————————————————————
 
-# 找出第一个 OR_lower <= 1 的点（CrI 不再显著优效）
+# Find the first OR_lower <= 1 point (CrI no longer significant)
 tipping_point <- tipping_results |>
   filter(OR_lower <= 1) |>
   slice(1)  # 取第一个满足条件的
@@ -155,24 +153,24 @@ print(tipping_point)
 
 sigma_tp <- tipping_point$fixed_sigma_alpha
 
-# 获取对应 posterior draws
+# posterior draws
 tp_draws <- all_samples_list_alpha[[as.character(sigma_tp)]]
 
-# 方法 1: 计算 posterior variance
+# caiculate posterior variance
 post_var <- var(tp_draws)
 post_var_alpha2 <- post_var["alpha[2]", "alpha[2]"] 
 
-# 方法 2: 如果 prior 是 N(0, σ²_prior), 则 prior variance：
+# If prior is N(0, σ²_prior), then prior variance:
 prior_var <- tipping_point$fixed_sigma_alpha^2 # tau_beta = 1e6 → σ² = 1e-6
 
-# 假设 adult total N:
+# adult total N:
 n_adult <- sum(adult_clean$N)
 
 # ESS based on variance shrinkage
 ess <- (prior_var / post_var_alpha2) * n_adult
 cat(sprintf("Estimated Effective Sample Size borrowed = %.1f\n", ess))
 
-# 方法 3: MCMC Effective Size
+# MCMC Effective Size
 ess_mcmc <- effectiveSize(tp_draws)
 cat(sprintf("MCMC Effective Sample Size = %.1f\n", ess_mcmc))
 
