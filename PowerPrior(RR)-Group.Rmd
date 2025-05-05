@@ -1,0 +1,1240 @@
+---
+title: "Power Prior(Response Rate Difference) Analysis-Groups"
+author: "Li Zhang & Yuxin Gao"
+date: "2025-04-30"
+output: html_document
+---
+
+```{r}
+# Load required libraries
+library(rjags)
+library(coda)
+library(dplyr)
+library(ggplot2)
+```
+
+```{r}
+# Define data
+# Follows Binomial distribution
+pediatric_data <- list(
+  y_placebo = 1,   # Number of responses in pediatric placebo group
+  n_placebo = 6,   # Total in pediatric placebo group
+  y_drug = 15,     # Number of responses in pediatric drug group 
+  n_drug = 30      # Total in pediatric drug group
+)
+
+adult_data <- list(
+  y_placebo = 45,  # Number of responses in adult placebo group
+  n_placebo = 494, # Total in adult placebo group
+  y_drug = 375,    # Number of responses in adult drug group
+  n_drug = 509     # Total in adult drug group
+)
+```
+
+## Method 1: Implement Power Prior using RJAGS
+
+The pediatric data are modeled with a binomial likelihood, and the adult data, weighted through the power prior, form a Beta prior to jointly infer the posterior of p.
+
+### Model
+
+```{r}
+#------ Method 1: Implement Power Prior using RJAGS ------
+power_prior_rjags <- function(ped_data, adult_data, alpha, n_iter = 10000) {
+  # Define the JAGS model
+  model_string <- "
+  model {
+    # Likelihood for pediatric data
+    # Observed pediatric data modeled using binomial distribution
+    y_ped_placebo ~ dbin(p_placebo, n_ped_placebo)
+    y_ped_drug ~ dbin(p_drug, n_ped_drug)
+    
+    # Likelihood for adult data (weighted via power prior)
+    # Equivalent to down-weighting adult data to an effective sample size
+    # Transform adult data into Beta prior parameters (α as borrowing strength)
+    a_placebo <- 1 + alpha * y_adult_placebo
+    b_placebo <- 1 + alpha * (n_adult_placebo - y_adult_placebo)
+    
+    a_drug <- 1 + alpha * y_adult_drug
+    b_drug <- 1 + alpha * (n_adult_drug - y_adult_drug)
+    
+    # Prior distribution (Beta distribution)
+    # Use Beta priors to directly reflect the result of Power Prior construction
+    p_placebo ~ dbeta(a_placebo, b_placebo)
+    p_drug ~ dbeta(a_drug, b_drug)
+    
+    # Compute response rate 
+    # odds_ratio <- (p_drug / (1 - p_drug)) / (p_placebo / (1 - p_placebo))
+    # log_odds_ratio <- log(odds_ratio)
+    rr_diff <- p_drug - p_placebo
+  }
+  "
+  
+  # Prepare JAGS data list
+  jags_data <- list(
+    y_ped_placebo = ped_data$y_placebo,
+    n_ped_placebo = ped_data$n_placebo,
+    y_ped_drug = ped_data$y_drug,
+    n_ped_drug = ped_data$n_drug,
+    y_adult_placebo = adult_data$y_placebo,
+    n_adult_placebo = adult_data$n_placebo,
+    y_adult_drug = adult_data$y_drug,
+    n_adult_drug = adult_data$n_drug,
+    alpha = alpha
+  )
+  
+  # Initialize the JAGS model
+  jags_model <- jags.model(textConnection(model_string), 
+                           data = jags_data, 
+                           n.chains = 3, 
+                           quiet = TRUE)
+  
+  # Burn-in
+  update(jags_model, 5000, progress.bar = "none")
+  
+  # Draw posterior samples
+  samples <- coda.samples(jags_model, 
+                         variable.names = c("p_placebo", "p_drug", "rr_diff"), 
+                         n.iter = n_iter, 
+                         progress.bar = "none")
+  
+  # Convert to matrix for processing
+  samples_matrix <- as.matrix(samples)
+  
+  rr_diff <- samples_matrix[, "rr_diff"]
+  p_placebo <- samples_matrix[, "p_placebo"]  
+  p_drug <- samples_matrix[, "p_drug"] 
+  median_rr_diff <- median(rr_diff)
+  ci_95 <- quantile(rr_diff, c(0.025, 0.975))
+  prob_gt_0 <- mean(rr_diff > 0)  # Probability that log(OR) > 0
+
+  return(list(
+    median_rr_diff = median_rr_diff,
+    ci_95 = ci_95,
+    prob_gt_0 = prob_gt_0,
+    samples = rr_diff,
+    samples_placebo = p_placebo,  
+    samples_drug = p_drug         
+  ))
+}
+
+```
+
+
+### Tipping Point 
+
+```{r}
+# Run the RJAGS model analysis and collect results for the differences in response rates
+run_rjags_rr_diff_analyses <- function(ped_data, adult_data, 
+                                     alpha_min = 0.001, alpha_max = 0.5, steps = 100) {
+  alpha_seq <- seq(alpha_min, alpha_max, length.out = steps)
+  results <- data.frame()
+  
+  for (alpha in alpha_seq) {
+    rjags_res <- power_prior_rjags(ped_data, adult_data, alpha)
+    
+    results <- rbind(results, data.frame(
+      alpha = alpha,
+      median_rr_diff = rjags_res$median_rr_diff,
+      lower_ci = rjags_res$ci_95[1],
+      upper_ci = rjags_res$ci_95[2],
+      prob_gt_0 = rjags_res$prob_gt_0
+    ))
+  }
+  
+  return(results)
+}
+
+# Find the tipping point (the first alpha value that makes the lower bound of the response rate difference > 0)
+find_rjags_rr_diff_tipping_point <- function(results) {
+  tp_idx <- which(results$lower_ci > 0)[1]
+  tipping_point <- ifelse(is.na(tp_idx), NA, results$alpha[tp_idx])
+  
+  if (!is.na(tipping_point)) {
+    cat("RJAGS Tipping Point (RR Diff lower bound > 0):", 
+        scales::percent(tipping_point, accuracy = 0.001), "\n")
+  } else {
+    cat("RJAGS Tipping Point: Not Found in the specified alpha range\n")
+  }
+  
+  return(tipping_point)
+}
+```
+
+
+### ESS
+
+```{r}
+# Modified grouped ESS calculation function based on posterior variance (RJAGS method)
+calculate_ess_from_variance_rjags <- function(ped_data, adult_data, alpha_seq, n_samples = 10000) {
+  ess_results <- data.frame(alpha = alpha_seq)
+  
+  # Calculate the posterior variance (V1) without borrowing - separately for the drug and placebo groups
+  # Run the RJAGS model with alpha=0
+  no_borrow_res <- power_prior_rjags(ped_data, adult_data, 0)
+  
+  V1_placebo <- var(no_borrow_res$samples_placebo)
+  V1_drug <- var(no_borrow_res$samples_drug)
+  V1_diff <- var(no_borrow_res$samples)  
+  
+  ess_values <- numeric(length(alpha_seq))
+  borrowed_values <- numeric(length(alpha_seq))
+  variance_ratio_values <- numeric(length(alpha_seq))
+  
+  placebo_ess_values <- numeric(length(alpha_seq))
+  drug_ess_values <- numeric(length(alpha_seq))
+  placebo_borrowed_values <- numeric(length(alpha_seq))
+  drug_borrowed_values <- numeric(length(alpha_seq))
+  placebo_variance_ratio <- numeric(length(alpha_seq))
+  drug_variance_ratio <- numeric(length(alpha_seq))
+  
+  for (i in 1:length(alpha_seq)) {
+    alpha <- alpha_seq[i]
+    
+    # Running the RJAGS model
+    borrow_res <- power_prior_rjags(ped_data, adult_data, alpha)
+    
+    V2_placebo <- var(borrow_res$samples_placebo)
+    V2_drug <- var(borrow_res$samples_drug)
+    V2_diff <- var(borrow_res$samples) 
+    
+    variance_ratio_placebo <- V1_placebo / V2_placebo
+    variance_ratio_drug <- V1_drug / V2_drug
+    variance_ratio_diff <- V1_diff / V2_diff
+    
+    # Calculate ESS - separately for drug and placebo groups
+    n_placebo <- ped_data$n_placebo
+    n_drug <- ped_data$n_drug
+    n_total <- n_placebo + n_drug
+    
+    placebo_ess <- n_placebo * variance_ratio_placebo
+    drug_ess <- n_drug * variance_ratio_drug
+    total_ess <- n_total * variance_ratio_diff
+    
+    placebo_borrowed <- placebo_ess - n_placebo
+    drug_borrowed <- drug_ess - n_drug
+    total_borrowed <- total_ess - n_total
+    
+    ess_values[i] <- total_ess
+    borrowed_values[i] <- total_borrowed
+    variance_ratio_values[i] <- variance_ratio_diff
+    
+    placebo_ess_values[i] <- placebo_ess
+    drug_ess_values[i] <- drug_ess
+    placebo_borrowed_values[i] <- placebo_borrowed
+    drug_borrowed_values[i] <- drug_borrowed
+    placebo_variance_ratio[i] <- variance_ratio_placebo
+    drug_variance_ratio[i] <- variance_ratio_drug
+  }
+  
+
+  ess_results$ess_total <- ess_values
+  ess_results$borrowed <- borrowed_values
+  ess_results$variance_ratio <- variance_ratio_values
+  ess_results$variance_noborrow <- V1_diff
+  ess_results$variance_borrow <- numeric(length(alpha_seq))  
+  
+
+  ess_results$placebo_ess <- placebo_ess_values
+  ess_results$placebo_borrowed <- placebo_borrowed_values
+  ess_results$placebo_variance_ratio <- placebo_variance_ratio
+  ess_results$placebo_variance_noborrow <- V1_placebo
+  
+  ess_results$drug_ess <- drug_ess_values
+  ess_results$drug_borrowed <- drug_borrowed_values
+  ess_results$drug_variance_ratio <- drug_variance_ratio
+  ess_results$drug_variance_noborrow <- V1_drug
+  
+  for (i in 1:length(alpha_seq)) {
+    alpha <- alpha_seq[i]
+    borrow_res <- power_prior_rjags(ped_data, adult_data, alpha)
+    ess_results$variance_borrow[i] <- var(borrow_res$samples)
+  }
+  
+  return(ess_results)
+}
+```
+
+### Visualization
+
+
+```{r}
+# Create a plot of the response rate differences (leave it as is)
+plot_rjags_rr_diff <- function(results, tipping_point = NA) {
+  alpha_min <- min(results$alpha)
+  alpha_max <- max(results$alpha)
+  
+  p <- ggplot(results, aes(x = alpha)) +
+    geom_line(aes(y = median_rr_diff), size = 1, color = "darkblue") +
+    geom_ribbon(aes(ymin = lower_ci, ymax = upper_ci), alpha = 0.2, fill = "steelblue") +
+    geom_hline(yintercept = 0, linetype = "dashed", color = "red") +
+    labs(title = "RJAGS Tipping Point Analysis: Borrowing Weight vs Response Rate Difference",
+         subtitle = "Showing 95% Credible Intervals",
+         x = "Borrowing Weight (α)",
+         y = "Response Rate Difference (Drug - Placebo)") +
+    theme_minimal() +
+    scale_x_continuous(labels = scales::percent_format(accuracy = 0.1))
+  
+  if (!is.na(tipping_point)) {
+    p <- p + 
+      geom_vline(xintercept = tipping_point, linetype = "dotted", color = "purple", size = 1) +
+      annotate("text", x = tipping_point + (alpha_max - alpha_min) * 0.05, 
+               y = min(results$lower_ci) + (max(results$upper_ci) - min(results$lower_ci)) * 0.9, 
+               label = paste0("Tipping Point: ", scales::percent(tipping_point, accuracy = 0.1)),
+               color = "purple", hjust = 0)
+  }
+  
+  return(p)
+}
+
+# Create a probability plot 
+plot_rjags_probability <- function(results, tipping_point = NA) {
+  p <- ggplot(results, aes(x = alpha, y = prob_gt_0)) +
+    geom_line(size = 1, color = "darkgreen") +
+    geom_hline(yintercept = 0.95, linetype = "dashed", color = "red") +
+    labs(title = "RJAGS Posterior Probability of Positive Treatment Effect",
+         subtitle = "Probability that Response Rate Difference > 0",
+         x = "Borrowing Weight (α)",
+         y = "P(RR Diff > 0)") +
+    theme_minimal() +
+    scale_y_continuous(labels = scales::percent_format(accuracy = 1), limits = c(0, 1)) +
+    scale_x_continuous(labels = scales::percent_format(accuracy = 0.1))
+  
+  if (!is.na(tipping_point)) {
+    p <- p + 
+      geom_vline(xintercept = tipping_point, linetype = "dotted", color = "purple", size = 1)
+  }
+  
+  return(p)
+}
+
+# Create an overall ESS graph 
+plot_rjags_ess <- function(ess_results, tipping_point = NA, ped_data) {
+  alpha_min <- min(ess_results$alpha)
+  alpha_max <- max(ess_results$alpha)
+  n_total <- ped_data$n_drug + ped_data$n_placebo
+  
+  p <- ggplot(ess_results, aes(x = alpha)) +
+    geom_line(aes(y = ess_total), size = 1, color = "darkorange") +
+    geom_hline(yintercept = n_total, linetype = "dashed", color = "blue", 
+              size = 0.8) +
+    annotate("text", x = alpha_min + (alpha_max - alpha_min) * 0.05, 
+            y = n_total * 1.05, 
+            label = paste0("Pediatric Sample Size: ", n_total),
+            color = "blue", hjust = 0) +
+    labs(title = "RJAGS Effective Sample Size Analysis based on Variance Ratio",
+         subtitle = "ESS = n * V1/V2 where V1, V2 are variances without and with borrowing",
+         x = "Borrowing Weight (α)",
+         y = "Effective Sample Size") +
+    theme_minimal() +
+    scale_x_continuous(labels = scales::percent_format(accuracy = 0.1))
+  
+
+  p <- p + scale_y_continuous(
+    name = "Effective Sample Size",
+    sec.axis = sec_axis(~(. - n_total), name = "Borrowed Sample Size")
+  )
+  
+  if (!is.na(tipping_point)) {
+    tp_idx <- which(abs(ess_results$alpha - tipping_point) == min(abs(ess_results$alpha - tipping_point)))
+    tp_ess <- ess_results$ess_total[tp_idx]
+    tp_borrowed <- ess_results$borrowed[tp_idx]
+    
+    p <- p + 
+      geom_vline(xintercept = tipping_point, linetype = "dotted", color = "purple", size = 1) +
+      annotate("text", x = tipping_point + (alpha_max - alpha_min) * 0.05, 
+               y = max(ess_results$ess_total) * 0.5,
+               label = paste0("ESS at TP: ", round(tp_ess, 1), 
+                             "\nBorrowed: ", round(tp_borrowed, 1)),
+               color = "purple", hjust = 0)
+  }
+  
+  return(p)
+}
+
+
+plot_rjags_variance_ratio <- function(ess_results, tipping_point = NA) {
+  alpha_min <- min(ess_results$alpha)
+  alpha_max <- max(ess_results$alpha)
+  
+  p <- ggplot(ess_results, aes(x = alpha)) +
+    geom_line(aes(y = variance_ratio), size = 1, color = "purple") +
+    geom_hline(yintercept = 1, linetype = "dashed", color = "gray50") +
+    labs(title = "RJAGS Variance Ratio Analysis",
+         subtitle = "Ratio of posterior variances: V1/V2",
+         x = "Borrowing Weight (α)",
+         y = "Variance Ratio (V1/V2)") +
+    theme_minimal() +
+    scale_x_continuous(labels = scales::percent_format(accuracy = 0.1))
+  
+  if (!is.na(tipping_point)) {
+    tp_idx <- which(abs(ess_results$alpha - tipping_point) == min(abs(ess_results$alpha - tipping_point)))
+    tp_var_ratio <- ess_results$variance_ratio[tp_idx]
+    
+    p <- p + 
+      geom_vline(xintercept = tipping_point, linetype = "dotted", color = "purple", size = 1) +
+      annotate("text", x = tipping_point + (alpha_max - alpha_min) * 0.05, 
+               y = max(ess_results$variance_ratio) * 0.8,
+               label = paste0("Var Ratio at TP: ", round(tp_var_ratio, 2)),
+               color = "purple", hjust = 0)
+  }
+  
+  return(p)
+}
+
+# Creating a Grouped ESS Plot
+plot_rjags_group_ess <- function(ess_results, tipping_point = NA, ped_data) {
+  alpha_min <- min(ess_results$alpha)
+  alpha_max <- max(ess_results$alpha)
+  
+  n_placebo <- ped_data$n_placebo
+  n_drug <- ped_data$n_drug
+  n_total <- n_placebo + n_drug
+  
+  p <- ggplot(ess_results, aes(x = alpha)) +
+    geom_line(aes(y = drug_ess, color = "Drug Group"), size = 1) +
+    geom_line(aes(y = placebo_ess, color = "Placebo Group"), size = 1) +
+    geom_line(aes(y = ess_total, color = "Total"), size = 1, linetype = "dashed") +
+    
+    # Original sample size reference line
+    geom_hline(yintercept = n_drug, linetype = "dotted", color = "blue", size = 0.6) +
+    geom_hline(yintercept = n_placebo, linetype = "dotted", color = "red", size = 0.6) +
+    geom_hline(yintercept = n_total, linetype = "dotted", color = "purple", size = 0.6) +
+    
+    annotate("text", x = alpha_min + (alpha_max - alpha_min) * 0.05, 
+             y = n_drug * 1.05, 
+             label = paste0("Original Drug Group Size: ", n_drug),
+             color = "blue", hjust = 0, size = 3) +
+    annotate("text", x = alpha_min + (alpha_max - alpha_min) * 0.05, 
+             y = n_placebo * 1.05, 
+             label = paste0("Original Placebo Group Size: ", n_placebo),
+             color = "red", hjust = 0, size = 3) +
+    
+    labs(title = "RJAGS Group-Specific Effective Sample Size Analysis",
+         subtitle = "Based on Group-Specific Variance Ratios",
+         x = "Borrowing Weight (α)",
+         y = "Effective Sample Size",
+         color = "Group") +
+    
+    scale_color_manual(values = c("Drug Group" = "blue", 
+                                  "Placebo Group" = "red", 
+                                  "Total" = "purple")) +
+    theme_minimal() +
+    scale_x_continuous(labels = scales::percent_format(accuracy = 0.1)) +
+    theme(legend.position = "bottom")
+  
+  # If there is a tipping point, add relevant annotations
+  if (!is.na(tipping_point)) {
+    tp_idx <- which(abs(ess_results$alpha - tipping_point) == min(abs(ess_results$alpha - tipping_point)))
+    tp_drug_ess <- ess_results$drug_ess[tp_idx]
+    tp_placebo_ess <- ess_results$placebo_ess[tp_idx]
+    tp_total_ess <- ess_results$ess_total[tp_idx]
+    
+    tp_drug_borrowed <- tp_drug_ess - n_drug
+    tp_placebo_borrowed <- tp_placebo_ess - n_placebo
+    tp_total_borrowed <- tp_total_ess - n_total
+    
+    # Add a vertical line at the tipping point
+    p <- p + 
+      geom_vline(xintercept = tipping_point, linetype = "dotted", color = "black", size = 0.8) +
+      annotate("text", x = tipping_point + (alpha_max - alpha_min) * 0.05, 
+               y = max(c(ess_results$drug_ess, ess_results$placebo_ess, ess_results$ess_total)) * 0.8,
+               label = paste0("At Tipping Point (α = ", 
+                             scales::percent(tipping_point, accuracy = 0.1), "):",
+                             "\nDrug ESS: ", round(tp_drug_ess, 1), 
+                             " (+" , round(tp_drug_borrowed, 1), ")",
+                             "\nPlacebo ESS: ", round(tp_placebo_ess, 1),
+                             " (+" , round(tp_placebo_borrowed, 1), ")",
+                             "\nTotal ESS: ", round(tp_total_ess, 1),
+                             " (+" , round(tp_total_borrowed, 1), ")"),
+               color = "black", hjust = 0, size = 3)
+  }
+  
+  return(p)
+}
+
+plot_rjags_group_variance_ratio <- function(ess_results, tipping_point = NA) {
+  alpha_min <- min(ess_results$alpha)
+  alpha_max <- max(ess_results$alpha)
+  
+  p <- ggplot(ess_results, aes(x = alpha)) +
+    geom_line(aes(y = drug_variance_ratio, color = "Drug Group"), size = 1) +
+    geom_line(aes(y = placebo_variance_ratio, color = "Placebo Group"), size = 1) +
+    geom_line(aes(y = variance_ratio, color = "Total"), size = 1, linetype = "dashed") +
+    
+    geom_hline(yintercept = 1, linetype = "dashed", color = "gray50") +
+    
+    labs(title = "RJAGS Group-Specific Variance Ratio Analysis",
+         subtitle = "Ratio of posterior variances without and with borrowing: V1/V2",
+         x = "Borrowing Weight (α)",
+         y = "Variance Ratio (V1/V2)",
+         color = "Group") +
+    
+    scale_color_manual(values = c("Drug Group" = "blue", 
+                                  "Placebo Group" = "red", 
+                                  "Total" = "purple")) +
+    theme_minimal() +
+    scale_x_continuous(labels = scales::percent_format(accuracy = 0.1)) +
+    theme(legend.position = "bottom")
+  
+  if (!is.na(tipping_point)) {
+    tp_idx <- which(abs(ess_results$alpha - tipping_point) == min(abs(ess_results$alpha - tipping_point)))
+    tp_drug_var_ratio <- ess_results$drug_variance_ratio[tp_idx]
+    tp_placebo_var_ratio <- ess_results$placebo_variance_ratio[tp_idx]
+    tp_total_var_ratio <- ess_results$variance_ratio[tp_idx]
+    
+    p <- p + 
+      geom_vline(xintercept = tipping_point, linetype = "dotted", color = "black", size = 0.8) +
+      annotate("text", x = tipping_point + (alpha_max - alpha_min) * 0.05, 
+               y = max(c(ess_results$drug_variance_ratio, ess_results$placebo_variance_ratio, 
+                         ess_results$variance_ratio)) * 0.8,
+               label = paste0("At Tipping Point (α = ", 
+                             scales::percent(tipping_point, accuracy = 0.1), "):",
+                             "\nDrug Var Ratio: ", round(tp_drug_var_ratio, 2),
+                             "\nPlacebo Var Ratio: ", round(tp_placebo_var_ratio, 2),
+                             "\nTotal Var Ratio: ", round(tp_total_var_ratio, 2)),
+               color = "black", hjust = 0, size = 3)
+  }
+  
+  return(p)
+}
+```
+
+
+### Main Function
+
+
+```{r}
+tipping_point_analysis_rjags <- function(ped_data, adult_data, 
+                                       alpha_min = 0.001, alpha_max = 0.5, steps = 50,
+                                       n_samples = 10000) {
+  # Step 1: Compute the alpha sequence 
+  alpha_seq <- seq(alpha_min, alpha_max, length.out = steps)
+  
+  # Step 2: Run RJAGS analysis
+  results <- run_rjags_rr_diff_analyses(ped_data, adult_data, alpha_min, alpha_max, steps)
+  
+  # Step 3: Find the tipping point
+  tipping_point <- find_rjags_rr_diff_tipping_point(results)
+  
+  # Step 4: Calculate the variance-based ESS
+  ess_results <- calculate_ess_from_variance_rjags(ped_data, adult_data, alpha_seq, n_samples)
+  
+  # Step 5: Create a chart (add a grouped ESS chart)
+  p1 <- plot_rjags_rr_diff(results, tipping_point)
+  p2 <- plot_rjags_probability(results, tipping_point)
+  p3 <- plot_rjags_ess(ess_results, tipping_point, ped_data)
+  p4 <- plot_rjags_variance_ratio(ess_results, tipping_point)
+  p5 <- plot_rjags_group_ess(ess_results, tipping_point, ped_data)  
+  p6 <- plot_rjags_group_variance_ratio(ess_results, tipping_point) 
+  
+
+  if (!is.na(tipping_point) && !is.null(ess_results)) {
+    tp_idx <- which(abs(ess_results$alpha - tipping_point) == min(abs(ess_results$alpha - tipping_point)))
+    
+    tp_ess <- ess_results$ess_total[tp_idx]
+    tp_borrowed <- ess_results$borrowed[tp_idx]
+    tp_var_ratio <- ess_results$variance_ratio[tp_idx]
+    
+    tp_placebo_ess <- ess_results$placebo_ess[tp_idx]
+    tp_placebo_borrowed <- ess_results$placebo_borrowed[tp_idx]
+    tp_placebo_var_ratio <- ess_results$placebo_variance_ratio[tp_idx]
+    
+    tp_drug_ess <- ess_results$drug_ess[tp_idx]
+    tp_drug_borrowed <- ess_results$drug_borrowed[tp_idx] 
+    tp_drug_var_ratio <- ess_results$drug_variance_ratio[tp_idx]
+  } else {
+    tp_ess <- NA
+    tp_borrowed <- NA
+    tp_var_ratio <- NA
+    tp_placebo_ess <- NA
+    tp_placebo_borrowed <- NA
+    tp_placebo_var_ratio <- NA
+    tp_drug_ess <- NA
+    tp_drug_borrowed <- NA
+    tp_drug_var_ratio <- NA
+  }
+  
+  return(list(
+    results = results,
+    ess_results = ess_results,
+    tipping_point = tipping_point,
+    
+    # General ESS Information
+    tipping_point_ess = tp_ess,
+    tipping_point_borrowed = tp_borrowed,
+    tipping_point_var_ratio = tp_var_ratio,
+    
+    # Placebo group ESS information
+    tipping_point_placebo_ess = tp_placebo_ess,
+    tipping_point_placebo_borrowed = tp_placebo_borrowed,
+    tipping_point_placebo_var_ratio = tp_placebo_var_ratio,
+    
+    # drug group ESS information
+    tipping_point_drug_ess = tp_drug_ess,
+    tipping_point_drug_borrowed = tp_drug_borrowed,
+    tipping_point_drug_var_ratio = tp_drug_var_ratio,
+    
+    plot_rr_diff = p1,
+    plot_prob = p2,
+    plot_ess = p3,
+    plot_var_ratio = p4,
+    plot_group_ess = p5,  
+    plot_group_var_ratio = p6  
+  ))
+}
+```
+
+
+### Run
+
+```{r}
+# Run RJAGS Tipping Point analysis
+tp_analysis_rjags <- tipping_point_analysis_rjags(pediatric_data, adult_data,
+                                      alpha_min = 0.001, 
+                                      alpha_max = 0.008, 
+                                      steps = 70)
+# Display basic charts
+tp_analysis_rjags$plot_rr_diff
+tp_analysis_rjags$plot_prob
+tp_analysis_rjags$plot_ess
+tp_analysis_rjags$plot_var_ratio
+
+# Display new group-specific ESS charts
+tp_analysis_rjags$plot_group_ess
+tp_analysis_rjags$plot_group_var_ratio
+
+# Get tipping point overall information
+cat("RJAGS Tipping Point Alpha:", tp_analysis_rjags$tipping_point, "\n")
+cat("Total ESS:", tp_analysis_rjags$tipping_point_ess, "\n")
+cat("Total Borrowed ESS:", tp_analysis_rjags$tipping_point_borrowed, "\n")
+cat("Total Variance Ratio:", tp_analysis_rjags$tipping_point_var_ratio, "\n")
+
+# Get tipping point group-specific information
+cat("\nPlacebo Group ESS:", tp_analysis_rjags$tipping_point_placebo_ess, "\n")
+cat("Placebo Group Borrowed ESS:", tp_analysis_rjags$tipping_point_placebo_borrowed, "\n")
+cat("Placebo Group Variance Ratio:", tp_analysis_rjags$tipping_point_placebo_var_ratio, "\n")
+cat("\nDrug Group ESS:", tp_analysis_rjags$tipping_point_drug_ess, "\n")
+cat("Drug Group Borrowed ESS:", tp_analysis_rjags$tipping_point_drug_borrowed, "\n")
+cat("Drug Group Variance Ratio:", tp_analysis_rjags$tipping_point_drug_var_ratio, "\n")
+```
+
+
+
+## Method 2: Direct Beta-Binomial Approach
+
+### Model
+
+```{r}
+#------ Method 2: Direct Beta-Binomial Approach with response rate ------
+power_prior_beta <- function(ped_data, adult_data, alpha, n_samples = 10000) {
+  a0 <- 1
+  b0 <- 1
+  
+  a_placebo <- a0 + alpha * adult_data$y_placebo
+  b_placebo <- b0 + alpha * (adult_data$n_placebo - adult_data$y_placebo)
+  
+  a_drug <- a0 + alpha * adult_data$y_drug
+  b_drug <- b0 + alpha * (adult_data$n_drug - adult_data$y_drug)
+  
+  a_placebo_post <- a_placebo + ped_data$y_placebo
+  b_placebo_post <- b_placebo + (ped_data$n_placebo - ped_data$y_placebo)
+  
+  a_drug_post <- a_drug + ped_data$y_drug
+  b_drug_post <- b_drug + (ped_data$n_drug - ped_data$y_drug)
+  
+  p_placebo_samples <- rbeta(n_samples, a_placebo_post, b_placebo_post)
+  p_drug_samples <- rbeta(n_samples, a_drug_post, b_drug_post)
+  
+  rr_diff <- p_drug_samples - p_placebo_samples
+  median_rr_diff <- median(rr_diff)
+  ci_95 <- quantile(rr_diff, c(0.025, 0.975))
+  prob_gt_0 <- mean(rr_diff > 0)
+  
+  return(list(
+    median_rr_diff = median_rr_diff,
+    ci_95 = ci_95,
+    prob_gt_0 = prob_gt_0,
+    samples = rr_diff,
+    samples_placebo = p_placebo_samples,  
+    samples_drug = p_drug_samples         
+  ))
+}
+
+```
+
+
+### Tipping Point
+
+
+```{r}
+#------ Tipping Point Analysis for Beta-Binomial ------
+# Run the Beta-Binomial model and collect results for the response rate differences
+run_rr_diff_analyses <- function(ped_data, adult_data, 
+                               alpha_min = 0.001, alpha_max = 0.5, steps = 100) {
+  alpha_seq <- seq(alpha_min, alpha_max, length.out = steps)
+  results <- data.frame()
+  
+  for (alpha in alpha_seq) {
+    beta_res <- power_prior_beta(ped_data, adult_data, alpha)
+    
+    results <- rbind(results, data.frame(
+      alpha = alpha,
+      median_rr_diff = beta_res$median_rr_diff,
+      lower_ci = beta_res$ci_95[1],
+      upper_ci = beta_res$ci_95[2],
+      prob_gt_0 = beta_res$prob_gt_0
+    ))
+  }
+  
+  return(results)
+}
+
+# Find the tipping point (the first alpha value that makes the lower bound of the response rate difference > 0)
+find_rr_diff_tipping_point <- function(results) {
+  tp_idx <- which(results$lower_ci > 0)[1]
+  tipping_point <- ifelse(is.na(tp_idx), NA, results$alpha[tp_idx])
+  
+  if (!is.na(tipping_point)) {
+    cat("Beta-Binomial Tipping Point (RR Diff lower bound > 0):", 
+        scales::percent(tipping_point, accuracy = 0.001), "\n")
+  } else {
+    cat("Beta-Binomial Tipping Point: Not Found in the specified alpha range\n")
+  }
+  
+  return(tipping_point)
+}
+```
+
+### ESS
+
+
+```{r}
+calculate_ess_from_variance <- function(ped_data, adult_data, alpha_seq, n_samples = 10000) {
+  ess_results <- data.frame(alpha = alpha_seq)
+  
+  # 1. Calculate posterior variance for each group without borrowing
+  # Use non-informative prior Beta(1,1)
+  a0 <- 1
+  b0 <- 1
+  
+  # Placebo group
+  a_placebo_post_noborrow <- a0 + ped_data$y_placebo
+  b_placebo_post_noborrow <- b0 + (ped_data$n_placebo - ped_data$y_placebo)
+  
+  # Drug group
+  a_drug_post_noborrow <- a0 + ped_data$y_drug
+  b_drug_post_noborrow <- b0 + (ped_data$n_drug - ped_data$y_drug)
+  
+  # Sample from posterior distribution
+  p_placebo_samples_noborrow <- rbeta(n_samples, a_placebo_post_noborrow, b_placebo_post_noborrow)
+  p_drug_samples_noborrow <- rbeta(n_samples, a_drug_post_noborrow, b_drug_post_noborrow)
+  
+  # Calculate response rate difference samples
+  rr_diff_noborrow <- p_drug_samples_noborrow - p_placebo_samples_noborrow
+  
+  # Calculate posterior variance without borrowing
+  V1_placebo <- var(p_placebo_samples_noborrow)  # Placebo group variance
+  V1_drug <- var(p_drug_samples_noborrow)        # Drug group variance
+  V1_diff <- var(rr_diff_noborrow)               # Difference variance
+  
+  # Prepare variables to store results
+  ess_values <- numeric(length(alpha_seq))
+  borrowed_values <- numeric(length(alpha_seq))
+  variance_ratio_values <- numeric(length(alpha_seq))
+  
+  # Added: Variables to store group-specific ESS
+  placebo_ess_values <- numeric(length(alpha_seq))
+  drug_ess_values <- numeric(length(alpha_seq))
+  placebo_borrowed_values <- numeric(length(alpha_seq))
+  drug_borrowed_values <- numeric(length(alpha_seq))
+  placebo_variance_ratio <- numeric(length(alpha_seq))
+  drug_variance_ratio <- numeric(length(alpha_seq))
+  v2_values <- numeric(length(alpha_seq))
+  v2_placebo_values <- numeric(length(alpha_seq))
+  v2_drug_values <- numeric(length(alpha_seq))
+  
+  # Calculate ESS for each alpha value
+  for (i in 1:length(alpha_seq)) {
+    alpha <- alpha_seq[i]
+    
+    # Use alpha weight to construct informative prior
+    a_placebo <- a0 + alpha * adult_data$y_placebo
+    b_placebo <- b0 + alpha * (adult_data$n_placebo - adult_data$y_placebo)
+    
+    a_drug <- a0 + alpha * adult_data$y_drug
+    b_drug <- b0 + alpha * (adult_data$n_drug - adult_data$y_drug)
+    
+    # Add pediatric data
+    a_placebo_post <- a_placebo + ped_data$y_placebo
+    b_placebo_post <- b_placebo + (ped_data$n_placebo - ped_data$y_placebo)
+    
+    a_drug_post <- a_drug + ped_data$y_drug
+    b_drug_post <- b_drug + (ped_data$n_drug - ped_data$y_drug)
+    
+    # Sample from posterior distribution
+    p_placebo_samples <- rbeta(n_samples, a_placebo_post, b_placebo_post)
+    p_drug_samples <- rbeta(n_samples, a_drug_post, b_drug_post)
+    
+    # Calculate response rate difference samples
+    rr_diff <- p_drug_samples - p_placebo_samples
+    
+    # Calculate posterior variance with borrowing
+    V2_placebo <- var(p_placebo_samples)  # Placebo group variance
+    V2_drug <- var(p_drug_samples)        # Drug group variance
+    V2_diff <- var(rr_diff)               # Difference variance
+    
+    # Calculate variance ratio
+    variance_ratio_placebo <- V1_placebo / V2_placebo
+    variance_ratio_drug <- V1_drug / V2_drug
+    variance_ratio_diff <- V1_diff / V2_diff
+    
+    # Calculate ESS for each group
+    n_placebo <- ped_data$n_placebo
+    n_drug <- ped_data$n_drug
+    n_total <- n_placebo + n_drug
+    
+    placebo_ess <- n_placebo * variance_ratio_placebo
+    drug_ess <- n_drug * variance_ratio_drug
+    total_ess <- n_total * variance_ratio_diff
+    
+    # Calculate borrowed sample size
+    placebo_borrowed <- placebo_ess - n_placebo
+    drug_borrowed <- drug_ess - n_drug
+    total_borrowed <- total_ess - n_total
+    
+    # Store results
+    ess_values[i] <- total_ess
+    borrowed_values[i] <- total_borrowed
+    variance_ratio_values[i] <- variance_ratio_diff
+    v2_values[i] <- V2_diff
+    
+    # Added: Store group-specific results
+    placebo_ess_values[i] <- placebo_ess
+    drug_ess_values[i] <- drug_ess
+    placebo_borrowed_values[i] <- placebo_borrowed
+    drug_borrowed_values[i] <- drug_borrowed
+    placebo_variance_ratio[i] <- variance_ratio_placebo
+    drug_variance_ratio[i] <- variance_ratio_drug
+    v2_placebo_values[i] <- V2_placebo
+    v2_drug_values[i] <- V2_drug
+  }
+  
+  # Create results data frame
+  ess_results$ess_total <- ess_values
+  ess_results$borrowed <- borrowed_values
+  ess_results$variance_ratio <- variance_ratio_values
+  ess_results$variance_noborrow <- V1_diff
+  ess_results$variance_borrow <- v2_values
+  
+  # Added: Group-specific results
+  ess_results$placebo_ess <- placebo_ess_values
+  ess_results$placebo_borrowed <- placebo_borrowed_values
+  ess_results$placebo_variance_ratio <- placebo_variance_ratio
+  ess_results$placebo_variance_noborrow <- V1_placebo
+  ess_results$placebo_variance_borrow <- v2_placebo_values
+  
+  ess_results$drug_ess <- drug_ess_values
+  ess_results$drug_borrowed <- drug_borrowed_values
+  ess_results$drug_variance_ratio <- drug_variance_ratio
+  ess_results$drug_variance_noborrow <- V1_drug
+  ess_results$drug_variance_borrow <- v2_drug_values
+  
+  return(ess_results)
+}
+```
+
+### Visualization
+
+```{r}
+plot_group_ess <- function(ess_results, tipping_point = NA, ped_data) {
+  alpha_min <- min(ess_results$alpha)
+  alpha_max <- max(ess_results$alpha)
+  
+  n_placebo <- ped_data$n_placebo
+  n_drug <- ped_data$n_drug
+  n_total <- n_placebo + n_drug
+  
+  p <- ggplot(ess_results, aes(x = alpha)) +
+    geom_line(aes(y = drug_ess, color = "Drug Group"), size = 1) +
+    geom_line(aes(y = placebo_ess, color = "Placebo Group"), size = 1) +
+    geom_line(aes(y = ess_total, color = "Total"), size = 1, linetype = "dashed") +
+    
+    geom_hline(yintercept = n_drug, linetype = "dotted", color = "blue", size = 0.6) +
+    geom_hline(yintercept = n_placebo, linetype = "dotted", color = "red", size = 0.6) +
+    geom_hline(yintercept = n_total, linetype = "dotted", color = "purple", size = 0.6) +
+    
+    annotate("text", x = alpha_min + (alpha_max - alpha_min) * 0.05, 
+             y = n_drug * 1.05, 
+             label = paste0("Original Drug Group Size: ", n_drug),
+             color = "blue", hjust = 0, size = 3) +
+    annotate("text", x = alpha_min + (alpha_max - alpha_min) * 0.05, 
+             y = n_placebo * 1.05, 
+             label = paste0("Original Placebo Group Size: ", n_placebo),
+             color = "red", hjust = 0, size = 3) +
+    
+    labs(title = "Beta-Binomial Group-Specific Effective Sample Size Analysis",
+         subtitle = "Based on Group-Specific Variance Ratios",
+         x = "Borrowing Weight (α)",
+         y = "Effective Sample Size",
+         color = "Group") +
+    
+    scale_color_manual(values = c("Drug Group" = "blue", 
+                                  "Placebo Group" = "red", 
+                                  "Total" = "purple")) +
+    theme_minimal() +
+    scale_x_continuous(labels = scales::percent_format(accuracy = 0.1)) +
+    theme(legend.position = "bottom")
+  
+  if (!is.na(tipping_point)) {
+    tp_idx <- which(abs(ess_results$alpha - tipping_point) == min(abs(ess_results$alpha - tipping_point)))
+    tp_drug_ess <- ess_results$drug_ess[tp_idx]
+    tp_placebo_ess <- ess_results$placebo_ess[tp_idx]
+    tp_total_ess <- ess_results$ess_total[tp_idx]
+    
+    tp_drug_borrowed <- tp_drug_ess - n_drug
+    tp_placebo_borrowed <- tp_placebo_ess - n_placebo
+    tp_total_borrowed <- tp_total_ess - n_total
+    
+    p <- p + 
+      geom_vline(xintercept = tipping_point, linetype = "dotted", color = "black", size = 0.8) +
+      annotate("text", x = tipping_point + (alpha_max - alpha_min) * 0.05, 
+               y = max(c(ess_results$drug_ess, ess_results$placebo_ess, ess_results$ess_total)) * 0.8,
+               label = paste0("At Tipping Point (α = ", 
+                             scales::percent(tipping_point, accuracy = 0.1), "):",
+                             "\nDrug ESS: ", round(tp_drug_ess, 1), 
+                             " (+" , round(tp_drug_borrowed, 1), ")",
+                             "\nPlacebo ESS: ", round(tp_placebo_ess, 1),
+                             " (+" , round(tp_placebo_borrowed, 1), ")",
+                             "\nTotal ESS: ", round(tp_total_ess, 1),
+                             " (+" , round(tp_total_borrowed, 1), ")"),
+               color = "black", hjust = 0, size = 3)
+  }
+  
+  return(p)
+}
+
+plot_probability <- function(results, tipping_point = NA) {
+  p <- ggplot(results, aes(x = alpha, y = prob_gt_0)) +
+    geom_line(size = 1, color = "darkgreen") +
+    geom_hline(yintercept = 0.95, linetype = "dashed", color = "red") +
+    labs(title = "Beta-Binomial Posterior Probability of Positive Treatment Effect",
+         subtitle = "Probability that Response Rate Difference > 0",
+         x = "Borrowing Weight (α)",
+         y = "P(RR Diff > 0)") +
+    theme_minimal() +
+    scale_y_continuous(labels = scales::percent_format(accuracy = 1), limits = c(0, 1)) +
+    scale_x_continuous(labels = scales::percent_format(accuracy = 0.1))
+  
+  if (!is.na(tipping_point)) {
+    p <- p + 
+      geom_vline(xintercept = tipping_point, linetype = "dotted", color = "purple", size = 1)
+  }
+  
+  return(p)
+}
+
+plot_variance_ratio <- function(ess_results, tipping_point = NA) {
+  alpha_min <- min(ess_results$alpha)
+  alpha_max <- max(ess_results$alpha)
+  
+  p <- ggplot(ess_results, aes(x = alpha)) +
+    geom_line(aes(y = variance_ratio), size = 1, color = "purple") +
+    geom_hline(yintercept = 1, linetype = "dashed", color = "gray50") +
+    labs(title = "Beta-Binomial Variance Ratio Analysis",
+         subtitle = "Ratio of posterior variances: V1/V2",
+         x = "Borrowing Weight (α)",
+         y = "Variance Ratio (V1/V2)") +
+    theme_minimal() +
+    scale_x_continuous(labels = scales::percent_format(accuracy = 0.1))
+  
+  if (!is.na(tipping_point)) {
+    tp_idx <- which(abs(ess_results$alpha - tipping_point) == min(abs(ess_results$alpha - tipping_point)))
+    tp_var_ratio <- ess_results$variance_ratio[tp_idx]
+    
+    p <- p + 
+      geom_vline(xintercept = tipping_point, linetype = "dotted", color = "purple", size = 1) +
+      annotate("text", x = tipping_point + (alpha_max - alpha_min) * 0.05, 
+               y = max(ess_results$variance_ratio) * 0.8,
+               label = paste0("Var Ratio at TP: ", round(tp_var_ratio, 2)),
+               color = "purple", hjust = 0)
+  }
+  
+  return(p)
+}
+
+plot_ess_from_variance <- function(ess_results, tipping_point = NA, ped_data) {
+  alpha_min <- min(ess_results$alpha)
+  alpha_max <- max(ess_results$alpha)
+  n_total <- ped_data$n_drug + ped_data$n_placebo
+  
+  p <- ggplot(ess_results, aes(x = alpha)) +
+    geom_line(aes(y = ess_total), size = 1, color = "orange") +
+    geom_hline(yintercept = n_total, linetype = "dashed", color = "blue", 
+              size = 0.8) +
+    annotate("text", x = alpha_min + (alpha_max - alpha_min) * 0.05, 
+            y = n_total * 1.05, 
+            label = paste0("Pediatric Sample Size: ", n_total),
+            color = "blue", hjust = 0) +
+    labs(title = "Effective Sample Size Analysis based on Variance Ratio",
+         subtitle = "ESS = n * V1/V2 where V1, V2 are variances without and with borrowing",
+         x = "Borrowing Weight (α)",
+         y = "Effective Sample Size") +
+    theme_minimal() +
+    scale_x_continuous(labels = scales::percent_format(accuracy = 0.1))
+  
+  p <- p + scale_y_continuous(
+    name = "Effective Sample Size",
+    sec.axis = sec_axis(~(. - n_total), name = "Borrowed Sample Size")
+  )
+  
+  if (!is.na(tipping_point)) {
+    tp_idx <- which(abs(ess_results$alpha - tipping_point) == min(abs(ess_results$alpha - tipping_point)))
+    tp_ess <- ess_results$ess_total[tp_idx]
+    tp_borrowed <- ess_results$borrowed[tp_idx]
+    
+    p <- p + 
+      geom_vline(xintercept = tipping_point, linetype = "dotted", color = "purple", size = 1) +
+      annotate("text", x = tipping_point + (alpha_max - alpha_min) * 0.05, 
+               y = max(ess_results$ess_total) * 0.5,
+               label = paste0("ESS at TP: ", round(tp_ess, 1), 
+                             "\nBorrowed: ", round(tp_borrowed, 1)),
+               color = "purple", hjust = 0)
+  }
+  
+  return(p)
+}
+
+plot_group_ess <- function(ess_results, tipping_point = NA, ped_data) {
+  alpha_min <- min(ess_results$alpha)
+  alpha_max <- max(ess_results$alpha)
+  
+  n_placebo <- ped_data$n_placebo
+  n_drug <- ped_data$n_drug
+  n_total <- n_placebo + n_drug
+  
+  p <- ggplot(ess_results, aes(x = alpha)) +
+    geom_line(aes(y = drug_ess, color = "Drug Group"), size = 1) +
+    geom_line(aes(y = placebo_ess, color = "Placebo Group"), size = 1) +
+    geom_line(aes(y = ess_total, color = "Total"), size = 1, linetype = "dashed") +
+    
+    geom_hline(yintercept = n_drug, linetype = "dotted", color = "blue", size = 0.6) +
+    geom_hline(yintercept = n_placebo, linetype = "dotted", color = "red", size = 0.6) +
+    geom_hline(yintercept = n_total, linetype = "dotted", color = "purple", size = 0.6) +
+    
+    annotate("text", x = alpha_min + (alpha_max - alpha_min) * 0.05, 
+             y = n_drug * 1.05, 
+             label = paste0("Original Drug Group Size: ", n_drug),
+             color = "blue", hjust = 0, size = 3) +
+    annotate("text", x = alpha_min + (alpha_max - alpha_min) * 0.05, 
+             y = n_placebo * 1.05, 
+             label = paste0("Original Placebo Group Size: ", n_placebo),
+             color = "red", hjust = 0, size = 3) +
+    
+    labs(title = "Beta-Binomial Group-Specific Effective Sample Size Analysis",
+         subtitle = "Based on Group-Specific Variance Ratios",
+         x = "Borrowing Weight (α)",
+         y = "Effective Sample Size",
+         color = "Group") +
+    
+    scale_color_manual(values = c("Drug Group" = "blue", 
+                                  "Placebo Group" = "red", 
+                                  "Total" = "purple")) +
+    theme_minimal() +
+    scale_x_continuous(labels = scales::percent_format(accuracy = 0.1)) +
+    theme(legend.position = "bottom")
+  
+  if (!is.na(tipping_point)) {
+    tp_idx <- which(abs(ess_results$alpha - tipping_point) == min(abs(ess_results$alpha - tipping_point)))
+    tp_drug_ess <- ess_results$drug_ess[tp_idx]
+    tp_placebo_ess <- ess_results$placebo_ess[tp_idx]
+    tp_total_ess <- ess_results$ess_total[tp_idx]
+    
+    tp_drug_borrowed <- tp_drug_ess - n_drug
+    tp_placebo_borrowed <- tp_placebo_ess - n_placebo
+    tp_total_borrowed <- tp_total_ess - n_total
+    
+    p <- p + 
+      geom_vline(xintercept = tipping_point, linetype = "dotted", color = "black", size = 0.8) +
+      annotate("text", x = tipping_point + (alpha_max - alpha_min) * 0.05, 
+               y = max(c(ess_results$drug_ess, ess_results$placebo_ess, ess_results$ess_total)) * 0.8,
+               label = paste0("At Tipping Point (α = ", 
+                             scales::percent(tipping_point, accuracy = 0.1), "):",
+                             "\nDrug ESS: ", round(tp_drug_ess, 1), 
+                             " (+" , round(tp_drug_borrowed, 1), ")",
+                             "\nPlacebo ESS: ", round(tp_placebo_ess, 1),
+                             " (+" , round(tp_placebo_borrowed, 1), ")",
+                             "\nTotal ESS: ", round(tp_total_ess, 1),
+                             " (+" , round(tp_total_borrowed, 1), ")"),
+               color = "black", hjust = 0, size = 3)
+  }
+  
+  return(p)
+}
+
+plot_group_variance_ratio <- function(ess_results, tipping_point = NA) {
+  alpha_min <- min(ess_results$alpha)
+  alpha_max <- max(ess_results$alpha)
+  
+  p <- ggplot(ess_results, aes(x = alpha)) +
+    geom_line(aes(y = drug_variance_ratio, color = "Drug Group"), size = 1) +
+    geom_line(aes(y = placebo_variance_ratio, color = "Placebo Group"), size = 1) +
+    geom_line(aes(y = variance_ratio, color = "Total"), size = 1, linetype = "dashed") +
+    
+    geom_hline(yintercept = 1, linetype = "dashed", color = "gray50") +
+    
+    labs(title = "Beta-Binomial Group-Specific Variance Ratio Analysis",
+         subtitle = "Ratio of posterior variances without and with borrowing: V1/V2",
+         x = "Borrowing Weight (α)",
+         y = "Variance Ratio (V1/V2)",
+         color = "Group") +
+    
+    scale_color_manual(values = c("Drug Group" = "blue", 
+                                  "Placebo Group" = "red", 
+                                  "Total" = "purple")) +
+    theme_minimal() +
+    scale_x_continuous(labels = scales::percent_format(accuracy = 0.1)) +
+    theme(legend.position = "bottom")
+  
+  if (!is.na(tipping_point)) {
+    tp_idx <- which(abs(ess_results$alpha - tipping_point) == min(abs(ess_results$alpha - tipping_point)))
+    tp_drug_var_ratio <- ess_results$drug_variance_ratio[tp_idx]
+    tp_placebo_var_ratio <- ess_results$placebo_variance_ratio[tp_idx]
+    tp_total_var_ratio <- ess_results$variance_ratio[tp_idx]
+    
+    p <- p + 
+      geom_vline(xintercept = tipping_point, linetype = "dotted", color = "black", size = 0.8) +
+      annotate("text", x = tipping_point + (alpha_max - alpha_min) * 0.05, 
+               y = max(c(ess_results$drug_variance_ratio, ess_results$placebo_variance_ratio, 
+                         ess_results$variance_ratio)) * 0.8,
+               label = paste0("At Tipping Point (α = ", 
+                             scales::percent(tipping_point, accuracy = 0.1), "):",
+                             "\nDrug Var Ratio: ", round(tp_drug_var_ratio, 2),
+                             "\nPlacebo Var Ratio: ", round(tp_placebo_var_ratio, 2),
+                             "\nTotal Var Ratio: ", round(tp_total_var_ratio, 2)),
+               color = "black", hjust = 0, size = 3)
+  }
+  
+  return(p)
+}
+  
+```
+
+### Main Function
+
+
+```{r}
+tipping_point_analysis_rr_diff <- function(ped_data, adult_data, 
+                                         alpha_min = 0.001, alpha_max = 0.5, steps = 100,
+                                         n_samples = 10000) {
+  # Step 1: Calculate alpha sequence
+  alpha_seq <- seq(alpha_min, alpha_max, length.out = steps)
+  
+  # Step 2: Run analysis
+  results <- run_rr_diff_analyses(ped_data, adult_data, alpha_min, alpha_max, steps)
+  
+  # Step 3: Find tipping point
+  tipping_point <- find_rr_diff_tipping_point(results)
+  
+  # Step 4: Calculate ESS based on variance (using modified function)
+  ess_results <- calculate_ess_from_variance(ped_data, adult_data, alpha_seq, n_samples)
+  
+  # Step 5: Create charts (keep only needed charts)
+  p3 <- plot_ess_from_variance(ess_results, tipping_point, ped_data)
+  p4 <- plot_variance_ratio(ess_results, tipping_point)
+  p5 <- plot_group_ess(ess_results, tipping_point, ped_data)  # Group-specific ESS chart
+  p6 <- plot_group_variance_ratio(ess_results, tipping_point) # Group-specific variance ratio chart
+  
+  # Calculate ESS and borrowed samples at tipping point (add group-specific information)
+  if (!is.na(tipping_point)) {
+    tp_idx <- which(abs(ess_results$alpha - tipping_point) == min(abs(ess_results$alpha - tipping_point)))
+    
+    # Overall ESS information
+    tp_ess <- ess_results$ess_total[tp_idx]
+    tp_borrowed <- ess_results$borrowed[tp_idx]
+    tp_var_ratio <- ess_results$variance_ratio[tp_idx]
+    
+    # Added: Group-specific ESS information
+    tp_placebo_ess <- ess_results$placebo_ess[tp_idx]
+    tp_placebo_borrowed <- ess_results$placebo_borrowed[tp_idx]
+    tp_placebo_var_ratio <- ess_results$placebo_variance_ratio[tp_idx]
+    
+    tp_drug_ess <- ess_results$drug_ess[tp_idx]
+    tp_drug_borrowed <- ess_results$drug_borrowed[tp_idx] 
+    tp_drug_var_ratio <- ess_results$drug_variance_ratio[tp_idx]
+  } else {
+    tp_ess <- NA
+    tp_borrowed <- NA
+    tp_var_ratio <- NA
+    tp_placebo_ess <- NA
+    tp_placebo_borrowed <- NA
+    tp_placebo_var_ratio <- NA
+    tp_drug_ess <- NA
+    tp_drug_borrowed <- NA
+    tp_drug_var_ratio <- NA
+  }
+  
+  # Return all results (remove unneeded charts)
+  return(list(
+    results = results,
+    ess_results = ess_results,
+    tipping_point = tipping_point,
+    
+    # Overall ESS information
+    tipping_point_ess = tp_ess,
+    tipping_point_borrowed = tp_borrowed,
+    tipping_point_var_ratio = tp_var_ratio,
+    
+    # Added: Placebo group ESS information
+    tipping_point_placebo_ess = tp_placebo_ess,
+    tipping_point_placebo_borrowed = tp_placebo_borrowed,
+    tipping_point_placebo_var_ratio = tp_placebo_var_ratio,
+    
+    # Added: Drug group ESS information
+    tipping_point_drug_ess = tp_drug_ess,
+    tipping_point_drug_borrowed = tp_drug_borrowed,
+    tipping_point_drug_var_ratio = tp_drug_var_ratio,
+    
+    # Charts (keep only needed ones)
+    plot_ess = p3,
+    plot_var_ratio = p4,
+    plot_group_ess = p5,  # Group-specific ESS chart
+    plot_group_var_ratio = p6  # Group-specific variance ratio chart
+  ))
+}
+```
+
+
+### Run
+
+
+```{r}
+# Run Tipping Point analysis
+tp_analysis <- tipping_point_analysis_rr_diff(pediatric_data, adult_data,
+                                      alpha_min = 0.001, 
+                                      alpha_max = 0.008, 
+                                      steps = 70, n_samples = 10000)
+# Display basic charts (removed references to non-existent charts)
+tp_analysis$plot_ess
+tp_analysis$plot_var_ratio
+
+# Display new group-specific ESS charts
+tp_analysis$plot_group_ess
+tp_analysis$plot_group_var_ratio
+
+# Get tipping point overall information
+cat("Beta-Binomial Tipping Point Alpha:", tp_analysis$tipping_point, "\n")
+cat("Total ESS:", tp_analysis$tipping_point_ess, "\n")
+cat("Total Borrowed ESS:", tp_analysis$tipping_point_borrowed, "\n")
+cat("Total Variance Ratio:", tp_analysis$tipping_point_var_ratio, "\n")
+
+# Get tipping point group-specific information
+cat("\nPlacebo Group ESS:", tp_analysis$tipping_point_placebo_ess, "\n")
+cat("Placebo Group Borrowed ESS:", tp_analysis$tipping_point_placebo_borrowed, "\n")
+cat("Placebo Group Variance Ratio:", tp_analysis$tipping_point_placebo_var_ratio, "\n")
+
+cat("\nDrug Group ESS:", tp_analysis$tipping_point_drug_ess, "\n")
+cat("Drug Group Borrowed ESS:", tp_analysis$tipping_point_drug_borrowed, "\n")
+cat("Drug Group Variance Ratio:", tp_analysis$tipping_point_drug_var_ratio, "\n")
+```
+
+
