@@ -3,7 +3,9 @@ library(rjags)
 library(here)
 library(ggplot2)
 library(tidyr)
+library(dplyr)           # ← 加上这个，才能用 mutate()
 library(shinycssloaders)
+library(plotly)
 
 
 source(here::here("shinny_app", "hierarchical_tipping_function.R"))
@@ -39,7 +41,7 @@ ui <- fluidPage(
     mainPanel(
       tabsetPanel(
         tabPanel("📊 Tipping Point Plot",
-                 withSpinner(plotOutput("tippingPlot")),
+                 withSpinner(plotly::plotlyOutput("tippingPlot")),
                  verbatimTextOutput("tippingConclusion")
         ),
         tabPanel("📈 ESS Calculation",
@@ -95,8 +97,18 @@ server <- function(input, output, session) {
                "\n95% CI: [", round(tipping_row_fda$OR_lower, 2), ", ", round(tipping_row_fda$OR_upper, 2), "]")
       })
       
-      output$tippingPlot <- renderPlot({
-        ggplot(tipping_results, aes(x = fixed_sigma_alpha, y = OR_median, color = Significant_FDA)) +
+      output$tippingPlot <- plotly::renderPlotly({
+        p <- ggplot(tipping_results, aes(
+          x = fixed_sigma_alpha,
+          y = OR_median,
+          color = Significant_FDA,
+          text = paste0(
+            "Sigma: ", round(fixed_sigma_alpha, 2), "<br>",
+            "OR: ", round(OR_median, 2), " [", round(OR_lower, 2), ", ", round(OR_upper, 2), "]<br>",
+            "Placebo ESS: ", round(ESS_FDA, 1), "<br>",
+            "Treatment ESS: ", round(ESS_FDA_trt, 1)
+          )
+        )) +
           geom_point(size = 3) +
           geom_errorbar(aes(ymin = OR_lower, ymax = OR_upper), width = 0.05) +
           geom_hline(yintercept = 1, linetype = "dashed", color = "red") +
@@ -117,7 +129,11 @@ server <- function(input, output, session) {
             y = "Odds Ratio (DrugA vs Placebo)"
           ) +
           theme_minimal(base_size = 15)
+        
+        # 关键一步：转为交互图
+        plotly::ggplotly(p, tooltip = "text")
       })
+      
       
       output$essTable <- renderTable({
         tipping_row <- tipping_results %>%
