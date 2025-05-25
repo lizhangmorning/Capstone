@@ -33,10 +33,10 @@ mixture_analysis <- function(
   
   prior_params <- list(
     treat = if (data_adult$treat$n > 0) {
-      list(a = data_adult$treat$y + 1, b = data_adult$treat$n - data_adult$treat$y + 1)
+      list(a = data_adult$treat$y, b = data_adult$treat$n - data_adult$treat$y)
     } else NULL,
     control = if (data_adult$control$n > 0) {
-      list(a = data_adult$control$y + 1, b = data_adult$control$n - data_adult$control$y + 1)
+      list(a = data_adult$control$y, b = data_adult$control$n - data_adult$control$y)
     } else NULL
   )
   
