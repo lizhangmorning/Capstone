@@ -1,0 +1,7 @@
+"0","power.t.test(n = 30, delta = 0.4055, sd = 1.203, "
+"0","             sig.level = 0.025, type = ""two.sample"", "
+"0","             alternative = ""one.sided"")$power"
+"1","[1]"
+"1"," 0.2495054"
+"1","
+"

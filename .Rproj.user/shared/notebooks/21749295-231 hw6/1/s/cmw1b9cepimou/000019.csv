@@ -1,0 +1,24 @@
+"0","r_vals <- seq(0.1, 0.3, by = 0.05)"
+"0",""
+"0","n_vals <- sapply(r_vals, function(r) {"
+"0","  mlrF.partial(N = NULL, p = 2, q = 1, pc = r, power = 0.8, v = FALSE)"
+"0","})"
+"2","G1;H1;Errorh in check.many(list(N, alpha, power), ""oneof"") : 
+  could not find function ""check.many""
+g"
+"2","G1;H1;Error during wrapuph: not that many frames on the stack
+Error: no more error handlers available (recursive errors?); invoking 'abort' restart
+g"
+"0","sensitivity_table <- data.frame("
+"0","  partial_r = r_vals,"
+"0","  required_N = ceiling(n_vals)"
+"0",")"
+"2","G1;H1;Errorh: object 'n_vals' not found
+Error during wrapup: not that many frames on the stack
+Error: no more error handlers available (recursive errors?); invoking 'abort' restart
+g"
+"0","print(sensitivity_table)"
+"2","G1;H1;Errorh: object 'sensitivity_table' not found
+Error during wrapup: not that many frames on the stack
+Error: no more error handlers available (recursive errors?); invoking 'abort' restart
+g"

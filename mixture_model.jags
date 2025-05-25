@@ -1,0 +1,26 @@
+
+model {
+  # Pediatric data
+  y1 ~ dbin(p1, n1)
+  y2 ~ dbin(p2, n2)
+
+  logit(p1) <- logit_p2 + theta
+  logit(p2) <- logit_p2
+
+  # Priors
+  logit_p2 ~ dnorm(0, 0.01)
+
+  # Mixture prior for theta
+  theta ~ dnorm(mu[i+1], tau[i+1])
+  i ~ dbern(w)
+
+  # Prior components
+  mu[1] <- mu_adult
+  tau[1] <- 1 / var_adult
+
+  mu[2] <- 0
+  tau[2] <- 1 / var_skept
+
+  is_superior <- step(theta)
+}
+

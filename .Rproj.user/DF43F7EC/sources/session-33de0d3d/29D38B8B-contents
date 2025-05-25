@@ -1,0 +1,129 @@
+---
+title: "231 hw6"
+output: html_document
+date: "2025-05-20"
+---
+10.4
+```{r}
+library(readxl)
+library(powertools)
+
+data <- read_excel("genotpeAinsulin.xls")
+```
+
+a.
+```{r}
+cor_raw <- cor(data$insulinres, data$genotypeA, method = "pearson")
+cat("Raw correlation (insulinres ~ genotype):", round(cor_raw, 3), "\n")
+```
+It is a small effect size.
+
+b.
+```{r}
+library(ppcor)
+result <- pcor.test(data$insulinres, data$genotypeA, data$age10)
+
+cat("Partial correlation (controlling for age):", round(result$estimate, 3), "\n")
+```
+It is a small effect size.
+
+c.
+```{r}
+source("mlrF.partial.R")
+mlrF.partial(N = NULL, p = 2, q = 1, pc = result$estimate, power = 0.8, v = FALSE)
+```
+The required sample size is 338.
+
+```{r}
+r_vals <- seq(0.1, 0.3, by = 0.05)
+
+n_vals <- sapply(r_vals, function(r) {
+  mlrF.partial(N = NULL, p = 2, q = 1, pc = r, power = 0.8, v = FALSE)
+})
+
+sensitivity_table <- data.frame(
+  partial_r = r_vals,
+  required_N = ceiling(n_vals)
+)
+
+print(sensitivity_table)
+```
+
+```{r}
+plot(r_vals, n_vals, type = "b", pch = 19,
+     xlab = "Partial Correlation (r)",
+     ylab = "Required Sample Size (80% Power)",
+     main = "Sample Size vs. Partial Correlation")
+abline(h = n_vals[r_vals == 0.3], col = "red", lty = 2)
+abline(v = 0.3, col = "red", lty = 2)
+```
+
+10.5
+a.
+$$
+(1 - R^2) = (1 - 0.184) = 0.816 \\
+(n - 1) = 269 \\
+0.816 \times 269 = 219.504\\
+
+(n - p - 1) = 270 - 9 - 1 = 260 \\
+
+\text{Adjusted } R^2 = 1 - \left( \frac{219.504}{260} \right) \\
+= 0.1558
+$$
+
+0.156 is the adjusted R².
+
+b.
+Mean = 7.72
+Standard Deviation (SD) = 5.79
+
+c.
+```{r}
+library(pmsampsize)
+
+pmsampsize(
+  type = "c",           # continuous outcome
+  rsquared = 0.156,     # adjusted R² from Bower et al.
+  parameters = 14,      # number of predictor parameters
+  sd = 5.79,            # SD of General Fatigue
+  intercept = 7.72      # mean of General Fatigue
+)
+```
+The required sample size is 624.
+
+d.
+The required sample size is 238.
+
+e.
+```{r}
+max_p <- 0
+
+for (p in 1:14) {
+  result <- tryCatch({
+    out <- pmsampsize(
+      type = "c",
+      rsquared = 0.156,
+      parameters = p,
+      sd = 5.79,
+      intercept = 7.72
+    )
+
+    n_required <- out$sample_size
+
+    if (!is.na(n_required)) {
+      if (n_required <= 400) {
+        max_p <- p
+      } else {
+        break
+      }
+    }
+  }, error = function(e) {
+    NULL
+  })
+}
+```
+
+```{r}
+max_p
+```
+The maximum number of predictors is 9.

@@ -1,0 +1,13 @@
+
+model {
+  # Likelihood: binomial model for both groups
+  y_drug ~ dbin(theta_drug, n_drug)
+  y_placebo ~ dbin(theta_placebo, n_placebo)
+
+  # Priors: Beta priors derived from weighted adult + vague priors
+  theta_drug ~ dbeta(a_drug, b_drug)
+  theta_placebo ~ dbeta(a_placebo, b_placebo)
+
+  # Difference in response rates
+  diff <- theta_drug - theta_placebo
+}

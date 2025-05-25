@@ -1,0 +1,4 @@
+"0","cor_raw <- cor(data$insulinres, data$genotypeA, method = ""pearson"")"
+"0","cat(""Raw correlation (insulinres ~ genotype):"", round(cor_raw, 3), ""\n"")"
+"1","Raw correlation (insulinres ~ genotype): 0.161 
+"

@@ -1,0 +1,3 @@
+"0","library(readxl)"
+"0",""
+"0","data <- read_excel(""genotpeAinsulin.xls"")"

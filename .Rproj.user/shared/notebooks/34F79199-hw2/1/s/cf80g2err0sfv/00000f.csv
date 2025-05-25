@@ -1,0 +1,6 @@
+"0","n_fixed <- 40"
+"0","min_detectable_diff <- z_total * sd_diffs / sqrt(n_fixed)"
+"0",""
+"0","data.frame(Correlation = rho_vals,"
+"0","           SD_Difference = round(sd_diffs, 2),"
+"0","           Min_Detectable_Diff = round(min_detectable_diff, 2))"

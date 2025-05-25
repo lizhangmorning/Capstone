@@ -1,0 +1,4 @@
+"0","plot(r_vals, n_vals, type = ""b"", pch = 19,"
+"0","     xlab = ""Partial Correlation (r)"","
+"0","     ylab = ""Required Sample Size (80% Power)"","
+"0","     main = ""Sample Size vs. Partial Correlation"")"

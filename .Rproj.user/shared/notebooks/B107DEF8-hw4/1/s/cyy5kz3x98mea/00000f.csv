@@ -1,0 +1,40 @@
+"0","library(powertools)"
+"2","Registered S3 method overwritten by 'htmlwidgets':
+  method           from         
+  print.htmlwidget tools:rstudio
+"
+"2","Registered S3 method overwritten by 'data.table':
+  method           from
+  print.data.table     
+"
+"0","pC <- c(0.4, 0.3, 0.3)"
+"0",""
+"0","propodds(pC = pC, OR = 3, n1 = NULL, n.ratio = 2, power = 0.8, alpha = 0.05, v = TRUE)"
+"1","
+    "
+"1"," "
+"1","Power calculation for ordinal categorical outcome under proportional odds"
+"1"," "
+"1","
+
+"
+"1","              n = 36.246, 72.492"
+"1","
+"
+"1","             pC = 0.4, 0.3, 0.3"
+"1","
+"
+"1","             pT = 0.667, 0.208, 0.125"
+"1","
+"
+"1","             OR = 3"
+"1","
+"
+"1","          alpha = 0.05"
+"1","
+"
+"1","          power = 0.8"
+"1","
+"
+"1","
+"

@@ -1,0 +1,18 @@
+"0","ggplot(results, aes(x = k, y = median_diff)) +
+  geom_ribbon(aes(ymin = ci_lower, ymax = ci_upper), fill = ""lightblue"", alpha = 0.5) +
+  geom_line(color = ""blue"", size = 1) +
+  geom_vline(xintercept = tipping_point$k, linetype = ""dashed"", color = ""red"") +
+  annotate(""text"", 
+           x = tipping_point$k, 
+           y = tipping_point$median_diff + 0.02, 
+           label = paste0(""Tipping point\nk = "", round(tipping_point$k, 3), 
+                          ""\nk_treat = "", round(tipping_point$k_treat, 3)), 
+           color = ""red"", hjust = -0.1) +
+  labs(x = ""Initial Weight"",
+       y = ""Posterior Median of Drug - Placebo"",
+       title = ""Tipping Point Analysis with 95% CI"") +
+  theme_minimal(base_size = 14)
+"
+"2","Error in round(tipping_point$k_treat, 3) : 
+  non-numeric argument to mathematical function
+"

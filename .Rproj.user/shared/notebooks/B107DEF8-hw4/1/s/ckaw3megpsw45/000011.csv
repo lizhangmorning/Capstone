@@ -1,0 +1,8 @@
+"0","res <- propodds(pC = pC, OR = 3, n1 = NULL, n.ratio = 2, power = 0.8, alpha = 0.05, v = TRUE)"
+"0","res$pT"
+"1","[1]"
+"1"," 0.667"
+"1"," 0.208"
+"1"," 0.125"
+"1","
+"

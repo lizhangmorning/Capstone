@@ -1,0 +1,20 @@
+"0","library(readxl)"
+"0","library(powertools)"
+"2","G3;Registered S3 method overwritten by 'htmlwidgets':
+  method           from         
+  print.htmlwidget tools:rstudio
+g"
+"2","G3;Registered S3 method overwritten by 'data.table':
+  method           from
+  print.data.table     
+g"
+"2","G3;
+Attaching package: ‘powertools’
+
+g"
+"2","G3;The following object is masked _by_ ‘.GlobalEnv’:
+
+    mlrF.partial
+
+g"
+"0","data <- read_excel(""genotpeAinsulin.xls"")"

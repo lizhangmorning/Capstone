@@ -1,0 +1,6 @@
+"0","library(ppcor)"
+"0","result <- pcor.test(data$insulinres, data$genotypeA, data$age10)"
+"0",""
+"0","cat(""Partial correlation (controlling for age):"", round(result$estimate, 3), ""\n"")"
+"1","Partial correlation (controlling for age): 0.151 
+"
