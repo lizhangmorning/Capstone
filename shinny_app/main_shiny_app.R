@@ -105,7 +105,7 @@ server <- function(input, output, session) {
         tp <- res$tipping_point_summary$RR
         if (!is.null(tp) && !is.na(tp$weight)) {
           paste0("Tipping Point Weight = ", round(tp$weight, 2), "\n",
-                 "ESS (Drug) = ", round(tp$ess_treat, 1), ", ESS (Placebo) = ", round(tp$ess_control, 1))
+                 "95% CI: [", round(tp$lower_95_rr, 2), " – ", round(tp$upper_95_rr, 2), "]\n")
         } else {
           "No tipping point found within the tested weight range."
         }

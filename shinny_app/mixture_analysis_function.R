@@ -129,7 +129,9 @@ mixture_analysis <- function(child_data, adult_data, weights = seq(0, 1, 0.04)) 
       list(
         weight = or_row$weight,
         ess_treat = or_row$ess_treat_or,
-        ess_control = or_row$ess_control_or
+        ess_control = or_row$ess_control_or,
+        lower_95_or = or_row$lower_95_or,
+        upper_95_or = or_row$upper_95_or
       )
     } else {
       NA
@@ -139,7 +141,9 @@ mixture_analysis <- function(child_data, adult_data, weights = seq(0, 1, 0.04)) 
       list(
         weight = rr_row$weight,
         ess_treat = rr_row$ess_treat_rr,
-        ess_control = rr_row$ess_control_rr
+        ess_control = rr_row$ess_control_rr,
+        lower_95_rr = rr_row$lower_95_rr, 
+        upper_95_rr = rr_row$upper_95_rr 
       )
     } else {
       NA
