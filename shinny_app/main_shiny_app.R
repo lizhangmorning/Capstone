@@ -134,7 +134,7 @@ server <- function(input, output, session) {
         
         if (!is.null(tp) && !is.na(tp$weight)) {
           HTML(paste0(
-            "<small><i>Tipping Point Weight: ", round(tp$weight, 2), "</i></small>"
+            "<small><i>Tipping Point Weight = ", round(tp$weight, 2), "</i></small>"
           ))
         } else {
           HTML("<small><i>No tipping point found.</i></small>")
@@ -260,7 +260,7 @@ server <- function(input, output, session) {
             slice_min(ESS_FDA)
           
           HTML(paste0(
-            "<small><i>Tipping Point ",
+            "<small><i>Tipping Point Sigma Alpha = ",
             round(tipping_row$fixed_sigma_alpha, 2),
             "</i></small>"
           ))
