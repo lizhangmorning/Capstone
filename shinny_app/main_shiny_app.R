@@ -105,7 +105,7 @@ server <- function(input, output, session) {
         tp <- res$tipping_point_summary$RR
         if (!is.null(tp) && !is.na(tp$weight)) {
           paste0("Tipping Point Weight = ", round(tp$weight, 2), "\n",
-                 "ESS (Trt) = ", round(tp$ess_treat, 1), ", ESS (Ctl) = ", round(tp$ess_control, 1))
+                 "ESS (Drug) = ", round(tp$ess_treat, 1), ", ESS (Placebo) = ", round(tp$ess_control, 1))
         } else {
           "No tipping point found within the tested weight range."
         }
@@ -114,13 +114,17 @@ server <- function(input, output, session) {
       output$essTable <- renderTable({
         res <- mixture_analysis(child_data, adult_data)
         tp <- res$tipping_point_summary$RR
+        
         if (!is.null(tp) && !is.na(tp$weight)) {
           tibble::tibble(
             Group = c("Treatment", "Control"),
-            ESS = c(round(tp$ess_treat, 1), round(tp$ess_control, 1))
+            `Delta ESS` = c(round(tp$ess_treat, 1), round(tp$ess_control, 1))
           )
         } else {
-          tibble::tibble(Group = character(0), ESS = numeric(0))
+          tibble::tibble(
+            Group = character(0), 
+            `Delta ESS` = numeric(0)
+          )
         }
       })
       
@@ -226,15 +230,13 @@ server <- function(input, output, session) {
           total_total <- round(placebo_total + treatment_total, 1)
           
           tibble::tibble(
-            Group = c("Placebo", "Treatment", "Total"),
-            `Borrowed ESS` = c(placebo_borrowed, treatment_borrowed, total_borrowed),
-            `Total ESS` = c(placebo_total, treatment_total, total_total)
+            Group = c("Placebo", "Treatment"),
+            `Delta ESS` = c(placebo_borrowed, treatment_borrowed)
           )
         } else {
           tibble::tibble(
             Group = character(0),
-            `Borrowed ESS` = numeric(0),
-            `Total ESS` = numeric(0)
+            `Delta ESS` = numeric(0)
           )
         }
       })
@@ -274,7 +276,7 @@ server <- function(input, output, session) {
         tp <- res$tipping_point_summary$RR
         if (!is.null(tp) && !is.na(tp$weight)) {
           paste0("Tipping Point Weight = ", scales::percent(tp$weight, accuracy = 0.001), "\n",
-                 "ESS (Trt) = ", round(tp$ess_treat, 1), ", ESS (Ctl) = ", round(tp$ess_control, 1))
+                 "ESS (Drug) = ", round(tp$ess_treat, 1), ", ESS (Placebo) = ", round(tp$ess_control, 1))
         } else {
           "No tipping point found within the specified alpha range."
         }
@@ -283,13 +285,17 @@ server <- function(input, output, session) {
       output$essTable <- renderTable({
         res <- power_prior_analysis(child_data, adult_data)
         tp <- res$tipping_point_summary$RR
+        
         if (!is.null(tp) && !is.na(tp$weight)) {
           tibble::tibble(
             Group = c("Treatment", "Control"),
-            ESS = c(round(tp$ess_treat, 1), round(tp$ess_control, 1))
+            `Delta ESS` = c(round(tp$ess_treat, 1), round(tp$ess_control, 1))
           )
         } else {
-          tibble::tibble(Group = character(0), ESS = numeric(0))
+          tibble::tibble(
+            Group = character(0), 
+            `Delta ESS` = numeric(0)
+          )
         }
       })
     }
