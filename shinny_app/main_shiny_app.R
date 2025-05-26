@@ -62,7 +62,8 @@ ui <- fluidPage(
                    verbatimTextOutput("tippingConclusion")
           ),
           tabPanel("📈 ESS Calculation",
-                   withSpinner(tableOutput("essTable"))
+                   withSpinner(tableOutput("essTable")),
+                   uiOutput("essNote")  # 👈 添加这一行
           )
         )
       ),
@@ -125,6 +126,18 @@ server <- function(input, output, session) {
             Group = character(0), 
             `Delta ESS` = numeric(0)
           )
+        }
+      })
+      output$essNote <- renderUI({
+        res <- mixture_analysis(child_data, adult_data)
+        tp <- res$tipping_point_summary$RR
+        
+        if (!is.null(tp) && !is.na(tp$weight)) {
+          HTML(paste0(
+            "<small><i>Tipping Point Weight: ", round(tp$weight, 2), "</i></small>"
+          ))
+        } else {
+          HTML("<small><i>No tipping point found.</i></small>")
         }
       })
       
@@ -240,6 +253,23 @@ server <- function(input, output, session) {
           )
         }
       })
+      output$essNote <- renderUI({
+        if (nrow(tipping_row_fda) > 0) {
+          tipping_row <- tipping_results %>%
+            filter(Significant_FDA == TRUE) %>%
+            slice_min(ESS_FDA)
+          
+          HTML(paste0(
+            "<small><i>Tipping Point ",
+            round(tipping_row$fixed_sigma_alpha, 2),
+            "</i></small>"
+          ))
+        } else {
+          HTML("<small><i>No tipping point found under FDA criteria.</i></small>")
+        }
+      })
+      
+      
     }
     
     # Power Prior分析
@@ -298,6 +328,26 @@ server <- function(input, output, session) {
           )
         }
       })
+      output$essNote <- renderUI({
+        if (input$model_type == "Power Prior") {
+          res <- power_prior_analysis(child_data, adult_data)
+          tp <- res$tipping_point_summary$RR
+          
+          if (!is.null(tp) && !is.na(tp$weight)) {
+            total_ess <- round(tp$ess_treat + tp$ess_control, 1)
+            borrowed <- round(tp$borrowed_treat + tp$borrowed_control, 1)
+            
+            HTML(paste0(
+              "<small><i>Tipping Point Weight = ", round(tp$weight, 3)
+            ))
+          } else {
+            HTML("<small><i>No tipping point found in Power Prior analysis.</i></small>")
+          }
+        } else {
+          NULL
+        }
+      })
+      
     }
     
     # 输出控制
