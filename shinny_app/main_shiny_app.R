@@ -118,8 +118,8 @@ server <- function(input, output, session) {
         
         if (!is.null(tp) && !is.na(tp$weight)) {
           tibble::tibble(
-            Group = c("Treatment", "Control"),
-            `Delta ESS` = c(round(tp$ess_treat, 1), round(tp$ess_control, 1))
+            Group = c("Placebo","Treatment"),
+            `Delta ESS` = c(round(tp$ess_control, 1),round(tp$ess_treat, 1))
           )
         } else {
           tibble::tibble(
@@ -318,8 +318,8 @@ server <- function(input, output, session) {
         
         if (!is.null(tp) && !is.na(tp$weight)) {
           tibble::tibble(
-            Group = c("Treatment", "Control"),
-            `Delta ESS` = c(round(tp$ess_treat, 1), round(tp$ess_control, 1))
+            Group = c("Placebo","Treatment"),
+            `Delta ESS` = c(round(tp$ess_control, 1),round(tp$ess_treat, 1))
           )
         } else {
           tibble::tibble(
