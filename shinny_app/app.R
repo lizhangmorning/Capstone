@@ -64,33 +64,45 @@ server <- function(input, output, session) {
   
   observeEvent(input$analyze, {
     
-    data_child <- list(
+    child_data <- list(
       treat = list(y = input$ped_treat_resp, n = input$ped_treat_total),
       control = list(y = input$ped_ctrl_resp, n = input$ped_ctrl_total)
     )
-    data_adult <- list(
+    adult_data <- list(
       treat = list(y = input$adult_treat_resp, n = input$adult_treat_total),
       control = list(y = input$adult_ctrl_resp, n = input$adult_ctrl_total)
     )
     
     if (input$model_type == "Mixture Prior") {
+      
       output$tippingPlot <- renderPlotly({
-        run_mixture_plot(data_child, data_adult)
+        run_mixture_plot(child_data, adult_data)
       })
       
       output$tippingConclusion <- renderText({
-        res <- mixture_analysis(data_child, data_adult)
-        paste0("Tipping Point = ", round(res$tipping_point, 2), "\n",
-               "ESS (Trt) = ", round(res$ess_treat, 1), ", ESS (Ctl) = ", round(res$ess_control, 1))
+        res <- mixture_analysis(child_data, adult_data)
+        tp <- res$tipping_point_summary$RR
+        if (!is.null(tp) && !is.na(tp$weight)) {
+          paste0("Tipping Point Weight = ", round(tp$weight, 2), "\n",
+                 "ESS (Trt) = ", round(tp$ess_treat, 1), ", ESS (Ctl) = ", round(tp$ess_control, 1))
+        } else {
+          "No tipping point found within the tested weight range."
+        }
       })
       
       output$essTable <- renderTable({
-        res <- mixture_analysis(data_child, data_adult)
-        tibble::tibble(
-          Group = c("Treatment", "Control"),
-          ESS = c(round(res$ess_treat, 1), round(res$ess_control, 1))
-        )
+        res <- mixture_analysis(child_data, adult_data)
+        tp <- res$tipping_point_summary$RR
+        if (!is.null(tp) && !is.na(tp$weight)) {
+          tibble::tibble(
+            Group = c("Treatment", "Control"),
+            ESS = c(round(tp$ess_treat, 1), round(tp$ess_control, 1))
+          )
+        } else {
+          tibble::tibble(Group = character(0), ESS = numeric(0))
+        }
       })
+      
     }
     
     if (input$model_type == "Bayesian Hierarchical Model") {
