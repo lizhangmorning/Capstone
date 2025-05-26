@@ -1,0 +1,7 @@
+Trial  Group   n  N  ResponseRate
+Trial1 Placebo 1  6  0.167
+Trial1 DrugA   9  20 0.45
+Trial2 Placebo NA NA NA
+Trial2 DrugA   6  10 0.6
+Pooled Placebo 1  6  0.167
+Pooled DrugA   15 30 0.5

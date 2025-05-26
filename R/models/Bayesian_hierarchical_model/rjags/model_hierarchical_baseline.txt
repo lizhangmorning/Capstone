@@ -1,0 +1,19 @@
+model {
+  for (i in 1:N) {
+    y[i] ~ dbin(p[i], n[i])
+    logit(p[i]) <- alpha[trial[i]] + beta[trial[i]] * group[i]
+  }
+
+  for (j in 1:J) {
+    alpha[j] ~ dnorm(mu_alpha, tau_alpha)
+    beta[j]  ~ dnorm(mu_beta, tau_beta)
+  }
+
+  mu_alpha ~ dnorm(mu_alpha_mean, mu_alpha_prec)
+  mu_beta  <- 0
+
+  sigma_alpha ~ dunif(0, sigma_alpha_max)
+  tau_alpha <- pow(sigma_alpha, -2)
+  
+  tau_beta <- 1e-6
+}
