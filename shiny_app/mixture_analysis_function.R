@@ -157,31 +157,57 @@ mixture_analysis <- function(child_data, adult_data, weights = seq(0, 1, 0.04)) 
     tipping_point_summary = tipping_point_summary
   ))
 }
-  
 
-# --- Plotting Function ---
+# --- Plotting Function (RR only) ---
 run_mixture_plot <- function(child_data, adult_data) {
   library(ggplot2)
   library(plotly)
+  library(dplyr)
   
   analysis <- mixture_analysis(child_data, adult_data)
   results <- analysis$results
-  k_tp <- analysis$tipping_point_summary
+  tipping_point <- analysis$tipping_point_summary$RR$weight
   
-  p <- ggplot(results, aes(x = weight, y = median_rr,
-                           text = paste0("k=", round(weight, 2),
-                                         "<br>ESS Trt: ", round(ess_treat_rr, 1),
-                                         "<br>ESS Ctl: ", round(ess_control_rr, 1),
-                                         "<br>95% CI: [", round(lower_95_rr, 3), ", ", round(upper_95_rr, 3), "]"))) +
-    geom_point(size = 2) +
-    geom_errorbar(aes(ymin = lower_95_rr, ymax = upper_95_rr), width = 0.01) +
+  results <- results %>%
+    mutate(
+      CI_Exclude_0 = lower_95_rr > 0,
+      text = paste0(
+        "α = ", round(weight, 4),
+        "<br>95% CI: [", round(lower_95_rr, 3), ", ", round(upper_95_rr, 3), "]",
+        "<br>Significant: ", CI_Exclude_0
+      )
+    )
+  
+  error_bar_width <- (max(results$weight) - min(results$weight)) / nrow(results)
+  
+  p <- ggplot(results, aes(
+    x = weight,
+    y = median_rr,
+    color = CI_Exclude_0,
+    text = text
+  )) +
+    geom_point(size = 3) +
+    geom_errorbar(aes(ymin = lower_95_rr, ymax = upper_95_rr), width = error_bar_width) +
     geom_hline(yintercept = 0, linetype = "dashed", color = "red") +
-    geom_vline(xintercept = ifelse(!is.na(k_tp$RR), k_tp$RR$weight, NA), 
-               linetype = "dashed", color = "blue") +
-    labs(title = "Treatment Effect with Mixture Prior",
-         x = "Prior Weight (k)",
-         y = "Treatment Effect (Drug - Placebo)") +
-    theme_minimal(base_size = 14)
+    scale_color_manual(values = c("TRUE" = "darkgreen", "FALSE" = "gray")) +
+    labs(
+      title = "Treatment Effect with Mixture Prior",
+      x = "Prior Weight (α)",
+      y = "Difference in Response Rates"
+    ) +
+    theme_minimal(base_size = 15) +
+    scale_x_continuous(labels = scales::percent_format(accuracy = 0.1))
+  
+  if (!is.na(tipping_point)) {
+    tipping_row <- results[which.min(abs(results$weight - tipping_point)), ]
+    p <- p +
+      geom_vline(xintercept = tipping_point, linetype = "dotted", color = "red") +
+      annotate("text",
+               x = tipping_point * 0.6,
+               y = tipping_row$median_rr + max(results$median_rr) * 0.1,
+               label = paste0("Tipping Point = ", round(tipping_point, 4)),
+               hjust = 0, vjust = 0, size = 4.5, fontface = "italic", color = "red")
+  }
   
   ggplotly(p, tooltip = "text")
 }
