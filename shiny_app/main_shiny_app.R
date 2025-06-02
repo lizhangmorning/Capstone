@@ -116,8 +116,8 @@ server <- function(input, output, session) {
         tp <- res$tipping_point_summary$RR
         if (!is.null(tp) && !is.na(tp$weight)) {
           tibble::tibble(
-            Group = c("Treatment", "Control"),
-            ESS = c(round(tp$ess_treat, 1), round(tp$ess_control, 1))
+        Group = c("Placebo","Treatment"),
+            `Delta ESS` = c(round(tp$ess_control, 1),round(tp$ess_treat, 1))
           )
         } else {
           tibble::tibble(Group = character(0), ESS = numeric(0))
@@ -285,8 +285,8 @@ server <- function(input, output, session) {
         tp <- res$tipping_point_summary$RR
         if (!is.null(tp) && !is.na(tp$weight)) {
           tibble::tibble(
-            Group = c("Treatment", "Control"),
-            ESS = c(round(tp$ess_treat, 1), round(tp$ess_control, 1))
+            Group = c("Placebo","Treatment"),
+            `Delta ESS` = c(round(tp$ess_control, 1),round(tp$ess_treat, 1))
           )
         } else {
           tibble::tibble(Group = character(0), ESS = numeric(0))
