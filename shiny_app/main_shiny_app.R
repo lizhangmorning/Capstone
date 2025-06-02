@@ -10,7 +10,7 @@ library(rjags)
 # === Load analysis functions ===
 source(here::here("shiny_app", "mixture_analysis_function.R"))
 source(here::here("shiny_app", "hierarchical_tipping_function.R"))
-source(here::here("shiny_app", "power_prior_functions.R"))
+source(here::here("shiny_app", "power_prior_functions_new.R"))
 
 ui <- fluidPage(
   titlePanel("Pediatric Extrapolation with Multiple Prior Methods"),
@@ -62,7 +62,8 @@ ui <- fluidPage(
                    verbatimTextOutput("tippingConclusion")
           ),
           tabPanel("📈 ESS Calculation",
-                   withSpinner(tableOutput("essTable"))
+                   withSpinner(tableOutput("essTable")),
+                   uiOutput("essNote")  # 👈 添加这一行
           )
         )
       ),
@@ -105,7 +106,7 @@ server <- function(input, output, session) {
         tp <- res$tipping_point_summary$RR
         if (!is.null(tp) && !is.na(tp$weight)) {
           paste0("Tipping Point Weight = ", round(tp$weight, 2), "\n",
-                 "ESS (Trt) = ", round(tp$ess_treat, 1), ", ESS (Ctl) = ", round(tp$ess_control, 1))
+                 "95% CI: [", round(tp$lower_95_rr, 2), ",", round(tp$upper_95_rr, 2), "]\n")
         } else {
           "No tipping point found within the tested weight range."
         }
@@ -114,13 +115,29 @@ server <- function(input, output, session) {
       output$essTable <- renderTable({
         res <- mixture_analysis(child_data, adult_data)
         tp <- res$tipping_point_summary$RR
+        
         if (!is.null(tp) && !is.na(tp$weight)) {
           tibble::tibble(
-        Group = c("Placebo","Treatment"),
-            `Delta ESS` = c(round(tp$ess_control, 1),round(tp$ess_treat, 1))
+            Group = c("Treatment", "Control"),
+            `Delta ESS` = c(round(tp$ess_treat, 1), round(tp$ess_control, 1))
           )
         } else {
-          tibble::tibble(Group = character(0), ESS = numeric(0))
+          tibble::tibble(
+            Group = character(0), 
+            `Delta ESS` = numeric(0)
+          )
+        }
+      })
+      output$essNote <- renderUI({
+        res <- mixture_analysis(child_data, adult_data)
+        tp <- res$tipping_point_summary$RR
+        
+        if (!is.null(tp) && !is.na(tp$weight)) {
+          HTML(paste0(
+            "<small><i>Tipping Point Weight = ", round(tp$weight, 2), "</i></small>"
+          ))
+        } else {
+          HTML("<small><i>No tipping point found.</i></small>")
         }
       })
       
@@ -226,18 +243,33 @@ server <- function(input, output, session) {
           total_total <- round(placebo_total + treatment_total, 1)
           
           tibble::tibble(
-            Group = c("Placebo", "Treatment", "Total"),
-            `Borrowed ESS` = c(placebo_borrowed, treatment_borrowed, total_borrowed),
-            `Total ESS` = c(placebo_total, treatment_total, total_total)
+            Group = c("Placebo", "Treatment"),
+            `Delta ESS` = c(placebo_borrowed, treatment_borrowed)
           )
         } else {
           tibble::tibble(
             Group = character(0),
-            `Borrowed ESS` = numeric(0),
-            `Total ESS` = numeric(0)
+            `Delta ESS` = numeric(0)
           )
         }
       })
+      output$essNote <- renderUI({
+        if (nrow(tipping_row_fda) > 0) {
+          tipping_row <- tipping_results %>%
+            filter(Significant_FDA == TRUE) %>%
+            slice_min(ESS_FDA)
+          
+          HTML(paste0(
+            "<small><i>Tipping Point Sigma Alpha = ",
+            round(tipping_row$fixed_sigma_alpha, 2),
+            "</i></small>"
+          ))
+        } else {
+          HTML("<small><i>No tipping point found under FDA criteria.</i></small>")
+        }
+      })
+      
+      
     }
     
     # Power Prior分析
@@ -274,7 +306,7 @@ server <- function(input, output, session) {
         tp <- res$tipping_point_summary$RR
         if (!is.null(tp) && !is.na(tp$weight)) {
           paste0("Tipping Point Weight = ", scales::percent(tp$weight, accuracy = 0.001), "\n",
-                 "ESS (Trt) = ", round(tp$ess_treat, 1), ", ESS (Ctl) = ", round(tp$ess_control, 1))
+                 "ESS (Drug) = ", round(tp$ess_treat, 1), ", ESS (Placebo) = ", round(tp$ess_control, 1))
         } else {
           "No tipping point found within the specified alpha range."
         }
@@ -283,15 +315,39 @@ server <- function(input, output, session) {
       output$essTable <- renderTable({
         res <- power_prior_analysis(child_data, adult_data)
         tp <- res$tipping_point_summary$RR
+        
         if (!is.null(tp) && !is.na(tp$weight)) {
           tibble::tibble(
-            Group = c("Placebo","Treatment"),
-            `Delta ESS` = c(round(tp$ess_control, 1),round(tp$ess_treat, 1))
+            Group = c("Treatment", "Control"),
+            `Delta ESS` = c(round(tp$ess_treat, 1), round(tp$ess_control, 1))
           )
         } else {
-          tibble::tibble(Group = character(0), ESS = numeric(0))
+          tibble::tibble(
+            Group = character(0), 
+            `Delta ESS` = numeric(0)
+          )
         }
       })
+      output$essNote <- renderUI({
+        if (input$model_type == "Power Prior") {
+          res <- power_prior_analysis(child_data, adult_data)
+          tp <- res$tipping_point_summary$RR
+          
+          if (!is.null(tp) && !is.na(tp$weight)) {
+            total_ess <- round(tp$ess_treat + tp$ess_control, 1)
+            borrowed <- round(tp$borrowed_treat + tp$borrowed_control, 1)
+            
+            HTML(paste0(
+              "<small><i>Tipping Point Weight = ", round(tp$weight, 3)
+            ))
+          } else {
+            HTML("<small><i>No tipping point found in Power Prior analysis.</i></small>")
+          }
+        } else {
+          NULL
+        }
+      })
+      
     }
     
     # 输出控制

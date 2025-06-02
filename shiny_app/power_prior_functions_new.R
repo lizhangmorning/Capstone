@@ -217,7 +217,6 @@ run_power_prior_analysis <- function(child_data, adult_data, alpha_min = 0.001, 
   ))
 }
 
-# 生成Power Prior Tipping Point图表 - 更新颜色编码和自定义参数
 run_power_prior_plot <- function(child_data, adult_data, alpha_min = 0.001, alpha_max = 0.01, steps = 20) {
   library(ggplot2)
   library(plotly)
@@ -232,11 +231,11 @@ run_power_prior_plot <- function(child_data, adult_data, alpha_min = 0.001, alph
   # 合并结果和ESS数据
   combined_results <- merge(results, ess_results, by = "alpha")
   
-  # 添加CI exclude 0的判断标准（模仿第二段代码的Significant_FDA逻辑）
+  # 添加CI exclude 0的判断标准
   combined_results$CI_Exclude_0 <- combined_results$lower_ci > 0
   
-  # 首先计算 error_bar_width（假设 alpha_max, alpha_min 和 steps 已定义）
-  error_bar_width <- (max(combined_results$alpha) - min(combined_results$alpha)) / nrow(combined_results) / 10
+  # 计算误差线宽度
+  error_bar_width <- (max(combined_results$alpha) - min(combined_results$alpha)) / nrow(combined_results) 
   
   # 创建ggplot对象
   p <- ggplot(combined_results, aes(
@@ -244,31 +243,35 @@ run_power_prior_plot <- function(child_data, adult_data, alpha_min = 0.001, alph
     y = median_rr_diff,
     color = CI_Exclude_0,
     text = paste0(
-      "α=", round(alpha, 4),
+      "α = ", round(alpha, 4),
       "<br>ESS Trt: ", round(drug_ess, 1),
       "<br>ESS Ctl: ", round(placebo_ess, 1),
       "<br>95% CI: [", round(lower_ci, 3), ", ", round(upper_ci, 3), "]"
     )
   )) +
-    geom_point(size = 4, alpha = 0.8) +
-    geom_errorbar(aes(ymin = lower_ci, ymax = upper_ci), width = error_bar_width, alpha = 0.7) +
-    geom_hline(yintercept = 0, linetype = "dashed", color = "red", size = 0.8) +
-    geom_vline(xintercept = ifelse(!is.na(tipping_point), tipping_point, NA), 
-               linetype = "dashed", color = "red", size = 0.8) +
-    {if(!is.na(tipping_point)) {
-      tipping_row <- combined_results[which.min(abs(combined_results$alpha - tipping_point)), ]
+    geom_point(size = 3) +
+    geom_errorbar(aes(ymin = lower_ci, ymax = upper_ci), width = error_bar_width)  +
+    geom_hline(yintercept = 0, linetype = "dashed", color = "red") +
+    scale_color_manual(values = c("TRUE" = "darkgreen", "FALSE" = "gray")) +
+    labs(
+      title = "Treatment Effect with Power Prior",
+      x = "Prior Weight (α)",
+      y = "Difference in Response Rates"
+    ) +
+    theme_minimal(base_size = 15) +
+    scale_x_continuous(labels = scales::percent_format(accuracy = 0.1))
+  
+  # 添加 tipping point 图层（如果存在）
+  if (!is.na(tipping_point)) {
+    tipping_row <- combined_results[which.min(abs(combined_results$alpha - tipping_point)), ]
+    p <- p +
+      geom_vline(xintercept = tipping_point, linetype = "dotted", color = "red") +
       annotate("text",
                x = tipping_point * 0.6,
                y = tipping_row$median_rr_diff + max(combined_results$median_rr_diff) * 0.1,
                label = paste0("Tipping Point = ", round(tipping_point, 4)),
                hjust = 0, vjust = 0, size = 4.5, fontface = "italic", color = "red")
-    }} +
-    scale_color_manual(values = c("TRUE" = "darkgreen", "FALSE" = "gray")) +
-    labs(title = "Treatment Effect with Power Prior",
-         x = "Prior Weight (α)",
-         y = "Treatment Effect (Drug - Placebo)") +
-    theme_minimal(base_size = 14) +
-    scale_x_continuous(labels = scales::percent_format(accuracy = 0.1))
+  }
   
   # 返回plotly对象
   ggplotly(p, tooltip = "text")
