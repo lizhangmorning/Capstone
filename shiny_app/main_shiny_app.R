@@ -50,6 +50,17 @@ ui <- fluidPage(
         helpText("Alpha represents the borrowing weight. Higher values mean more borrowing from adult data.")
       ),
       
+      # Bayesian Hierarchical设置（条件显示）
+      conditionalPanel(
+        condition = "input.model_type == 'Bayesian Hierarchical Model'",
+        hr(),
+        h5("Bayesian Hierarchical Settings"),
+        numericInput("sigma_min", "Minimum Sigma", 1, min = 0, max = 50, step = 1),
+        numericInput("sigma_max", "Maximum Sigma", 2, min = 0, max = 1000000, step = 1),
+        numericInput("sigma_steps", "Number of Steps", 10, min = 1, max = 200, step = 1),
+        helpText("Sigma controls the borrowing level in the Bayesian hierarchical model. Higher sigma allows more borrowing from adult data.")
+      ),
+      
       actionButton("analyze", "Run Analysis")
     ),
     
@@ -313,35 +324,21 @@ server <- function(input, output, session) {
     
     if (input$model_type == "Bayesian Hierarchical Model") {
       
-      ## === Step 1: Construct pediatric and adult data from user input ===
-      pediatric_clean <- data.frame(
-        Group = c("Placebo", "DrugA"),
-        n = c(input$ped_ctrl_resp, input$ped_treat_resp),
-        N = c(input$ped_ctrl_total, input$ped_treat_total),
-        Trial = "Pooled"
-      ) |> 
-        mutate(Source = "Pediatric")
+      sigma_grid <- seq(input$sigma_min, input$sigma_max, length.out = input$sigma_steps)
       
-      adult_clean <- data.frame(
-        Group = c("Placebo", "DrugA"),
-        n = c(input$adult_ctrl_resp, input$adult_treat_resp),
-        N = c(input$adult_ctrl_total, input$adult_treat_total),
-        Trial = "Pooled"
-      ) |> 
-        mutate(Source = "Adult")
+      tipping_results <- run_bayesian_tipping_analysis(
+        ped_ctrl_resp = input$ped_ctrl_resp,
+        ped_ctrl_total = input$ped_ctrl_total,
+        ped_treat_resp = input$ped_treat_resp,
+        ped_treat_total = input$ped_treat_total,
+        adult_ctrl_resp = input$adult_ctrl_resp,
+        adult_ctrl_total = input$adult_ctrl_total,
+        adult_treat_resp = input$adult_treat_resp,
+        adult_treat_total = input$adult_treat_total,
+        sigma_values = sigma_grid
+      )
       
-      combined_data <- bind_rows(pediatric_clean, adult_clean) |>
-        mutate(
-          group = ifelse(Group == "DrugA", 1, 0),
-          trial_str = paste(Source, Trial),
-          trial = as.integer(factor(trial_str)),
-          y = n
-        )
-      
-      ## === Step 2: Bayesian model loop ===
-      tipping_results <- run_bayesian_tipping_analysis(combined_data)
-      
-      ## === Step 3: 输出图与结论 ===
+      ##Step 3: Get conclusion
       tipping_results$Significant_FDA <- tipping_results$OR_lower > 1
       tipping_row_fda <- tipping_results |>
         filter(Significant_FDA == TRUE) |>
@@ -357,41 +354,7 @@ server <- function(input, output, session) {
       })
       
       output$tippingPlot <- renderPlotly({
-        p <- ggplot(tipping_results, aes(
-          x = fixed_sigma_alpha,
-          y = OR_median,
-          color = Significant_FDA,
-          text = paste0(
-            "Sigma: ", round(fixed_sigma_alpha, 2), "<br>",
-            "OR: ", round(OR_median, 2), " [", round(OR_lower, 2), ", ", round(OR_upper, 2), "]<br>",
-            "Placebo ESS: ", round(ESS_FDA, 1), "<br>",
-            "Treatment ESS: ", round(ESS_FDA_trt, 1)
-          )
-        )) +
-          geom_point(size = 3) +
-          geom_errorbar(aes(ymin = OR_lower, ymax = OR_upper), width = 0.05) +
-          geom_hline(yintercept = 1, linetype = "dashed", color = "red") +
-          {if(nrow(tipping_row_fda) > 0) 
-            geom_vline(xintercept = tipping_row_fda$fixed_sigma_alpha, linetype = "dotted", color = "red")} +
-          {if(nrow(tipping_row_fda) > 0)
-            annotate("text",
-                     x = tipping_row_fda$fixed_sigma_alpha * 0.6,
-                     y = tipping_row_fda$OR_median + 80,
-                     label = paste0("Tipping Point = ", round(tipping_row_fda$fixed_sigma_alpha, 2)),
-                     hjust = 0, vjust = 0, size = 4.5, fontface = "italic", color = "red")} +
-          scale_color_manual(values = c("TRUE" = "darkgreen", "FALSE" = "gray")) +
-          scale_y_continuous(
-            trans = scales::log10_trans(),
-            breaks = c(1, 10, 50, 100)
-          ) +
-          labs(
-            title = "Pediatric OR vs Borrowing Strength (σ)",
-            x = "sigma alpha",
-            y = "Odds Ratio (DrugA vs Placebo)"
-          ) +
-          theme_minimal(base_size = 15)
-        
-        # 关键一步：转为交互图
+        p <- plot_hierarchical_tipping(tipping_results, tipping_row_fda)
         ggplotly(p, tooltip = "text")
       })
       
