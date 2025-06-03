@@ -232,7 +232,7 @@ run_power_prior_plot <- function(child_data, adult_data, alpha_min = 0.001, alph
   combined_results <- merge(results, ess_results, by = "alpha")
   
   # 添加CI exclude 0的判断标准
-  combined_results$CI_Exclude_0 <- combined_results$lower_ci > 0
+  combined_results$Favorable <- combined_results$lower_ci > 0
   
   # 计算误差线宽度
   error_bar_width <- (max(combined_results$alpha) - min(combined_results$alpha)) / nrow(combined_results) 
@@ -241,7 +241,7 @@ run_power_prior_plot <- function(child_data, adult_data, alpha_min = 0.001, alph
   p <- ggplot(combined_results, aes(
     x = alpha, 
     y = median_rr_diff,
-    color = CI_Exclude_0,
+    color = Favorable,
     text = paste0(
       "α = ", round(alpha, 4),
       "<br>ESS Trt: ", round(drug_ess, 1),
