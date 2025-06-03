@@ -150,8 +150,8 @@ plot_hierarchical_tipping <- function(tipping_results, tipping_row_fda) {
     text = paste0(
       "Sigma: ", round(fixed_sigma_alpha, 2), "<br>",
       "OR: ", round(OR_median, 2), " [", round(OR_lower, 2), ", ", round(OR_upper, 2), "]<br>",
-      "Placebo ESS: ", round(ESS_FDA, 1), "<br>",
-      "Treatment ESS: ", round(ESS_FDA_trt, 1)
+      "Placebo ESS: ", round(Borrowed_FDA, 1), "<br>",
+      "Treatment ESS: ", round(Borrowed_FDA_trt, 1)
     )
   )) +
     geom_point(size = 3) +

@@ -170,7 +170,11 @@ ui <- fluidPage(
 
 server <- function(input, output, session) {
   
-  values <- reactiveValues(analysisDone = FALSE, showFisher = FALSE)
+  values <- reactiveValues(
+    analysisDone = FALSE, 
+    showFisher = FALSE
+    )
+  
   
   # 创建 reactive 表达式来存储 Power Prior 分析结果
   powerPriorResults <- eventReactive(input$analyze, {
@@ -291,8 +295,8 @@ server <- function(input, output, session) {
   
   observeEvent(input$analyze, {
     
-    values$showFisher <- FALSE  # 运行分析时隐藏Fisher结果
     values$analysisDone <- TRUE
+    values$showFisher <- FALSE  # 运行分析时隐藏Fisher结果
     
     child_data <- list(
       treat = list(y = input$ped_treat_resp, n = input$ped_treat_total),
@@ -422,7 +426,7 @@ server <- function(input, output, session) {
       tipping_results$Significant_FDA <- tipping_results$OR_lower > 1
       tipping_row_fda <- tipping_results |>
         filter(Significant_FDA == TRUE) |>
-        slice_min(ESS_FDA)
+        slice_max(fixed_sigma_alpha)
       
       output$tippingConclusion <- renderText({
         if (nrow(tipping_row_fda) > 0) {
@@ -632,50 +636,60 @@ server <- function(input, output, session) {
     
   }) # end observeEvent for analyze
   
-  # Fisher's Exact Test 事件处理
+  # Fisher's Exact Test 事件处理 - 切换模式
   observeEvent(input$fisher, {
-    # 1. 构造2x2列联表
-    values$showFisher <- TRUE 
-    table_mat <- matrix(
-      c(
-        input$ped_treat_resp,
-        input$ped_treat_total - input$ped_treat_resp,
-        input$ped_ctrl_resp,
-        input$ped_ctrl_total - input$ped_ctrl_resp
-      ),
-      nrow = 2,
-      byrow = TRUE
-    )
-    rownames(table_mat) <- c("DrugA", "Placebo")
-    colnames(table_mat) <- c("Success", "Failure")
     
-    # 2. 执行Fisher's检验
-    fisher_res <- fisher.test(table_mat)
+    # 🔥 切换显示状态
+    values$showFisher <- TRUE  # 运行分析时隐藏Fisher结果
+    values$analysisDone <- FALSE
     
-    # 3. 输出检验结果
-    output$fisherResult <- renderPrint({
-      cat("2x2 Table (Pediatric Data):\n\n")
-      print(table_mat)
-      cat("\nFisher's Exact Test Result:\n")
-      cat("P-value:", signif(fisher_res$p.value, 4), "\n")
-      cat("Odds Ratio:", signif(fisher_res$estimate, 4), "\n")
-      cat("95% CI:", paste0("(", signif(fisher_res$conf.int[1], 4), ", ", signif(fisher_res$conf.int[2], 4), ")"), "\n")
+    if (values$showFisher) {
+      # 只有在显示时才计算Fisher检验
+      # 1. 构造2x2列联表
+      table_mat <- matrix(
+        c(
+          input$ped_treat_resp,
+          input$ped_treat_total - input$ped_treat_resp,
+          input$ped_ctrl_resp,
+          input$ped_ctrl_total - input$ped_ctrl_resp
+        ),
+        nrow = 2,
+        byrow = TRUE
+      )
+      rownames(table_mat) <- c("DrugA", "Placebo")
+      colnames(table_mat) <- c("Success", "Failure")
       
-      # 判断显著性
-      if (fisher_res$p.value > 0.05 || (fisher_res$conf.int[1] < 1 && fisher_res$conf.int[2] > 1)) {
-        cat("→ Not statistically significant.\n")
-      } else {
-        cat("→ Statistically significant.\n")
-      }
+      # 2. 执行Fisher's检验
+      fisher_res <- fisher.test(table_mat)
+      
+      # 3. 输出检验结果
+      output$fisherResult <- renderPrint({
+        cat("2x2 Table (Pediatric Data):\n\n")
+        print(table_mat)
+        cat("\nFisher's Exact Test Result:\n")
+        cat("P-value:", signif(fisher_res$p.value, 4), "\n")
+        cat("Odds Ratio:", signif(fisher_res$estimate, 4), "\n")
+        cat("95% CI:", paste0("(", signif(fisher_res$conf.int[1], 4), ", ", signif(fisher_res$conf.int[2], 4), ")"), "\n")
+        
+        # 判断显著性
+        if (fisher_res$p.value > 0.05 || (fisher_res$conf.int[1] < 1 && fisher_res$conf.int[2] > 1)) {
+          cat("→ Not statistically significant.\n")
+        } else {
+          cat("→ Statistically significant.\n")
+        }
+      })
+    }
+    # 显示Fisher面板
+    output$showFisherPanel <- reactive({
+      values$showFisher
     })
-  })
+    outputOptions(output, "showFisherPanel", suspendWhenHidden = FALSE)
+  }) # end observeEvent for fisher
   
-  # Fisher面板显示控制
-  output$showFisherPanel <- reactive({
-    values$showFisher
+  observe({
+    print(paste0("showFisher changed: ", values$showFisher))
   })
-  outputOptions(output, "showFisherPanel", suspendWhenHidden = FALSE)
-}
+} 
 
 shinyApp(ui = ui, server = server)
 
