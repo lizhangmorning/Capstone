@@ -1,4 +1,3 @@
-
 library(shiny)
 library(plotly)
 library(here)
@@ -7,6 +6,7 @@ library(dplyr)
 library(tidyr)
 library(shinycssloaders)
 library(rjags)
+library(DT)  # 🔥 新增：用于数据表格
 
 # === Load analysis functions ===
 source(here::here("shiny_app", "mixture_analysis_function.R"))
@@ -14,7 +14,7 @@ source(here::here("shiny_app", "hierarchical_tipping_function.R"))
 source(here::here("shiny_app", "power_prior_functions_new.R"))
 
 ui <- fluidPage(
-  titlePanel("Pediatric Extrapolation with Multiple Prior Methods"),
+  titlePanel("Pediatric Extrapolation with Bayesian Methods"),
   
   sidebarLayout(
     sidebarPanel(
@@ -40,11 +40,10 @@ ui <- fluidPage(
       selectInput("model_type", "Bayesian Analysis:",
                   choices = c("Mixture Prior", "Bayesian Hierarchical Model", "Power Prior")),
       
-      # Power Prior设置（条件显示）
       conditionalPanel(
-        condition = "input.model_type == 'Power Prior'",
+        condition = "input.model_type == 'Power Prior'|| input.model_type == 'Mixture Prior'",
         hr(),
-        h5("Power Prior Settings"),
+        h5("Prior Settings"),
         numericInput("alpha_min", "Minimum Alpha", 0.001, min = 0, max = 1, step = 0.001),
         numericInput("alpha_max", "Maximum Alpha", 0.01, min = 0, max = 1, step = 0.001),
         numericInput("alpha_steps", "Number of Steps", 50, min = 10, max = 200),
@@ -65,10 +64,34 @@ ui <- fluidPage(
                      condition = "input.model_type == 'Power Prior'",
                      uiOutput("errorBarInfo")
                    ),
-                   verbatimTextOutput("tippingConclusion")
+                   verbatimTextOutput("tippingConclusion"),
+                   
+                   # 🔥 添加Power Prior解释框
+                   conditionalPanel(
+                     condition = "input.model_type == 'Power Prior'",
+                     div(style = "margin-top: 15px; padding: 10px; background-color: #e8f4f8; border-left: 4px solid #17a2b8; border-radius: 3px;",
+                         h5("💡 Power Prior Methodology", style = "color: #17a2b8; margin-bottom: 8px;"),
+                         tags$p(style = "margin-bottom: 5px; font-size: 14px;",
+                                strong("Prior ~ Beta(1 + αy, 1 + α(n - y))")),
+                         tags$p(style = "margin-bottom: 5px; font-size: 13px; color: #6c757d;",
+                                "• α (alpha): weight applied to adult study data"),
+                         tags$p(style = "margin-bottom: 5px; font-size: 13px; color: #6c757d;",
+                                "• Larger α → more borrowing from adult data"),
+                         tags$p(style = "margin-bottom: 0px; font-size: 13px; color: #6c757d;",
+                                "• Tipping point: minimum α where CI excludes 0")
+                     )
+                   )
           ),
-          tabPanel("📈 ESS Calculation",
-                   withSpinner(tableOutput("essTable")),
+          tabPanel("📈 Results",
+                   # 🔥 修改：对Power Prior使用DT表格，其他使用普通表格
+                   conditionalPanel(
+                     condition = "input.model_type == 'Power Prior'",
+                     withSpinner(DT::dataTableOutput("essTableDetailed"))
+                   ),
+                   conditionalPanel(
+                     condition = "input.model_type != 'Power Prior'",
+                     withSpinner(tableOutput("essTable"))
+                   ),
                    uiOutput("essNote")
           )
         )
@@ -145,6 +168,66 @@ server <- function(input, output, session) {
     }
   })
   
+  mixturePriorResults <- eventReactive(input$analyze, {
+    if (input$model_type == "Mixture Prior") {
+      
+      # 参数校验
+      if (input$alpha_min >= input$alpha_max) {
+        showNotification("Alpha minimum must be less than maximum", type = "error")
+        return(NULL)
+      }
+      
+      # 构造数据列表
+      child_data <- list(
+        treat = list(y = input$ped_treat_resp, n = input$ped_treat_total),
+        control = list(y = input$ped_ctrl_resp, n = input$ped_ctrl_total)
+      )
+      adult_data <- list(
+        treat = list(y = input$adult_treat_resp, n = input$adult_treat_total),
+        control = list(y = input$adult_ctrl_resp, n = input$adult_ctrl_total)
+      )
+      
+      # 运行分析并显示进度
+      withProgress(message = 'Running Mixture Prior Analysis...', value = 0, {
+        incProgress(0.1, detail = "Initializing...")
+        
+        # 调用你的 mixture 分析函数
+        analysis_results <- run_mixture_plot(
+          child_data,
+          adult_data,
+          alpha_min = input$alpha_min,
+          alpha_max = input$alpha_max,
+          alpha_steps = input$alpha_steps
+        )
+        
+        # 获取更详细结果
+        detailed_results <- get_mixture_analysis(
+          child_data,
+          adult_data,
+          alpha_min = input$alpha_min,
+          alpha_max = input$alpha_max,
+          alpha_steps = input$alpha_steps
+        )
+        
+        incProgress(0.9, detail = "Finalizing...")
+        
+        return(list(
+          analysis = analysis_results,
+          detailed = detailed_results,
+          child_data = child_data,
+          adult_data = adult_data,
+          alpha_min = input$alpha_min,
+          alpha_max = input$alpha_max,
+          alpha_steps = input$alpha_steps
+        ))
+      })
+      
+    } else {
+      return(NULL)
+    }
+  })
+  
+  
   observeEvent(input$analyze, {
     
     values$showFisher <- FALSE  # 运行分析时隐藏Fisher结果
@@ -161,47 +244,91 @@ server <- function(input, output, session) {
     
     if (input$model_type == "Mixture Prior") {
       
+      # 生成图表 - 基于 mixture 的 reactive 结果
       output$tippingPlot <- renderPlotly({
-        run_mixture_plot(child_data, adult_data)
-      })
-      
-      output$tippingConclusion <- renderText({
-        res <- mixture_analysis(child_data, adult_data)
-        tp <- res$tipping_point_summary$RR
-        if (!is.null(tp) && !is.na(tp$weight)) {
-          paste0("Tipping Point Weight = ", round(tp$weight, 2), "\n",
-                 "95% CI: [", round(tp$lower_95_rr, 2), ",", round(tp$upper_95_rr, 2), "]\n")
-        } else {
-          "No tipping point found within the tested weight range."
-        }
-      })
-      
-      output$essTable <- renderTable({
-        res <- mixture_analysis(child_data, adult_data)
-        tp <- res$tipping_point_summary$RR
-        
-        if (!is.null(tp) && !is.na(tp$weight)) {
-          tibble::tibble(
-            Group = c("Treatment", "Control"),
-            `Delta ESS` = c(round(tp$ess_treat, 1), round(tp$ess_control, 1))
-          )
-        } else {
-          tibble::tibble(
-            Group = character(0), 
-            `Delta ESS` = numeric(0)
+        results <- mixturePriorResults()
+        if (!is.null(results)) {
+          run_mixture_with_params(
+            results$child_data, 
+            results$adult_data,
+            results$alpha_min,
+            results$alpha_max,
+            results$alpha_steps
           )
         }
       })
-      output$essNote <- renderUI({
-        res <- mixture_analysis(child_data, adult_data)
-        tp <- res$tipping_point_summary$RR
-        
-        if (!is.null(tp) && !is.na(tp$weight)) {
+      
+      # Error Bar 信息 - 基于 mixture 结果
+      output$errorBarInfo <- renderUI({
+        results <- mixturePriorResults()
+        if (!is.null(results)) {
+          analysis_results <- results$analysis
+          combined_results <- analysis_results$results
+          combined_results$CI_Exclude_0 <- combined_results$lower_95_rr > 0
+          
+          total_error_bars <- nrow(combined_results)
+          significant_error_bars <- sum(combined_results$CI_Exclude_0)
+          non_significant_error_bars <- total_error_bars - significant_error_bars
+          
           HTML(paste0(
-            "<small><i>Tipping Point Weight = ", round(tp$weight, 2), "</i></small>"
+            "<div style='background-color: #f8f9fa; border: 1px solid #dee2e6; border-radius: 5px; padding: 10px; margin: 10px 0;'>",
+            "<strong>📊 Error Bar Statistics:</strong><br>",
+            "📈 Total Error Bars: <span style='color: #007bff;'><strong>", total_error_bars, "</strong></span><br>",
+            "✅ Significant (CI excludes 0): <span style='color: #28a745;'><strong>", significant_error_bars, "</strong></span><br>",
+            "❌ Non-significant (CI includes 0): <span style='color: #6c757d;'><strong>", non_significant_error_bars, "</strong></span><br>",
+            "🎯 Alpha Range: ", scales::percent(results$alpha_min, accuracy = 0.1), " - ", scales::percent(results$alpha_max, accuracy = 0.1),
+            "</div>"
           ))
-        } else {
-          HTML("<small><i>No tipping point found.</i></small>")
+        }
+      })
+      
+      # 生成结论 - 基于 mixture 结果
+      output$tippingConclusion <- renderText({
+        results <- mixturePriorResults()
+        if (!is.null(results)) {
+          tp <- results$detailed$tipping_point_summary$RR
+          if (!is.null(tp) && !is.na(tp$weight)) {
+            paste0("Tipping Point Weight = ", tp$weight, "\n",
+                   "ESS (Drug) = ", round(tp$ess_treat, 1), ", ESS (Placebo) = ", round(tp$ess_control, 1))
+          } else {
+            "No tipping point found within the specified alpha range."
+          }
+        }
+      })
+      
+      # ESS 表格 - 基于 mixture 结果
+      output$essTable <- renderTable({
+        results <- mixturePriorResults()
+        if (!is.null(results)) {
+          tp <- results$detailed$tipping_point_summary$RR
+          
+          if (!is.null(tp) && !is.na(tp$weight)) {
+            tibble::tibble(
+              Group = c("Treatment", "Control"),
+              `Delta ESS` = c(round(tp$ess_treat, 1), round(tp$ess_control, 1))
+            )
+          } else {
+            tibble::tibble(
+              Group = character(0), 
+              `Delta ESS` = numeric(0)
+            )
+          }
+        }
+      })
+      
+      # ESS 注释 - 基于 mixture 结果
+      output$essNote <- renderUI({
+        results <- mixturePriorResults()
+        if (!is.null(results)) {
+          tp <- results$detailed$tipping_point_summary$RR
+          
+          if (!is.null(tp) && !is.na(tp$weight)) {
+            HTML(paste0(
+              "<small><i>Tipping Point Weight = ", round(tp$weight, 3), "</i></small>"
+            ))
+          } else {
+            HTML("<small><i>No tipping point found in Mixture Prior analysis.</i></small>")
+          }
         }
       })
       
@@ -335,10 +462,10 @@ server <- function(input, output, session) {
       
     }
     
-    # Power Prior分析 - 修改为使用 reactive 结果
+    # 🔥 简化的Power Prior分析
     if (input$model_type == "Power Prior") {
       
-      # 生成图表 - 基于 reactive 结果
+      # 生成图表
       output$tippingPlot <- renderPlotly({
         results <- powerPriorResults()
         if (!is.null(results)) {
@@ -352,11 +479,10 @@ server <- function(input, output, session) {
         }
       })
       
-      # Error Bar 信息 - 基于 reactive 结果
+      # Error Bar 信息
       output$errorBarInfo <- renderUI({
         results <- powerPriorResults()
         if (!is.null(results)) {
-          # 重新计算统计信息
           analysis_results <- results$analysis
           combined_results <- merge(analysis_results$results, analysis_results$ess_results, by = "alpha")
           combined_results$CI_Exclude_0 <- combined_results$lower_ci > 0
@@ -377,7 +503,7 @@ server <- function(input, output, session) {
         }
       })
       
-      # 生成结论 - 基于 reactive 结果
+      # 生成结论
       output$tippingConclusion <- renderText({
         results <- powerPriorResults()
         if (!is.null(results)) {
@@ -391,38 +517,57 @@ server <- function(input, output, session) {
         }
       })
       
-      # ESS 表格 - 基于 reactive 结果
-      output$essTable <- renderTable({
+      # 🔥 根据实际列名显示重要数据，保留三位小数
+      output$essTableDetailed <- DT::renderDataTable({
         results <- powerPriorResults()
         if (!is.null(results)) {
-          tp <- results$detailed$tipping_point_summary$RR
+          analysis_results <- results$analysis
+          combined_results <- merge(analysis_results$results, analysis_results$ess_results, by = "alpha")
           
-          if (!is.null(tp) && !is.na(tp$weight)) {
-            tibble::tibble(
-              Group = c("Treatment", "Control"),
-              `Delta ESS` = c(round(tp$ess_treat, 1), round(tp$ess_control, 1))
+          # 选择重要列并重命名（使用正确的列名）
+          display_data <- combined_results %>%
+            dplyr::select(
+              `Alpha (α)` = alpha,
+              `CI Lower` = lower_ci,
+              `CI Upper` = upper_ci,
+              `ESS Treatment` = drug_ess,  # 🔥 修正：使用 drug_ess 而不是 ess_treatment
+              `ESS Control` = placebo_ess   # 🔥 修正：使用 placebo_ess 而不是 ess_control
+            ) %>%
+            dplyr::mutate(
+              `Alpha (α)` = scales::percent(`Alpha (α)`, accuracy = 0.001),
+              `CI Lower` = round(`CI Lower`, 3),
+              `CI Upper` = round(`CI Upper`, 3),
+              `ESS Treatment` = round(`ESS Treatment`, 1),
+              `ESS Control` = round(`ESS Control`, 1)
             )
-          } else {
-            tibble::tibble(
-              Group = character(0), 
-              `Delta ESS` = numeric(0)
-            )
-          }
+          
+          # 创建数据表格
+          datatable(
+            display_data,
+            options = list(
+              pageLength = 25,
+              scrollX = TRUE
+            ),
+            rownames = FALSE
+          )
+        } else {
+          datatable(
+            data.frame(Message = "Please run Power Prior analysis first"),
+            options = list(dom = 't'),
+            rownames = FALSE
+          )
         }
       })
       
-      # ESS 注释 - 基于 reactive 结果
+      # 简化的注释
       output$essNote <- renderUI({
         results <- powerPriorResults()
         if (!is.null(results)) {
           tp <- results$detailed$tipping_point_summary$RR
-          
           if (!is.null(tp) && !is.na(tp$weight)) {
-            HTML(paste0(
-              "<small><i>Tipping Point Weight = ", round(tp$weight, 3), "</i></small>"
-            ))
+            HTML(paste0("<small><i>Tipping Point Weight = ", scales::percent(tp$weight, accuracy = 0.001), "</i></small>"))
           } else {
-            HTML("<small><i>No tipping point found in Power Prior analysis.</i></small>")
+            HTML("<small><i>No tipping point found.</i></small>")
           }
         }
       })

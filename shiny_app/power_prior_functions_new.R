@@ -1,5 +1,4 @@
 # ===== Power Prior Analysis Functions =====
-
 # 这个文件包含了Power Prior分析的封装函数，可以直接整合到主Shiny应用中
 
 library(rjags)
@@ -218,7 +217,6 @@ run_power_prior_analysis <- function(child_data, adult_data, alpha_min = 0.001, 
   ))
 }
 
-# 修复后的绘图函数 - 正确使用传入的参数
 run_power_prior_plot <- function(child_data, adult_data, alpha_min = 0.001, alpha_max = 0.01, steps = 20) {
   library(ggplot2)
   library(plotly)
@@ -279,7 +277,7 @@ run_power_prior_plot <- function(child_data, adult_data, alpha_min = 0.001, alph
   ggplotly(p, tooltip = "text")
 }
 
-# Power Prior分析函数 - 返回摘要信息，修复参数传递
+# Power Prior分析函数 - 返回摘要信息
 power_prior_analysis <- function(child_data, adult_data, alpha_min = 0.001, alpha_max = 0.01, alpha_steps = 50) {
   # 运行分析，传递用户自定义的参数
   analysis_results <- run_power_prior_analysis(child_data, adult_data, alpha_min, alpha_max, alpha_steps)
@@ -298,16 +296,14 @@ power_prior_analysis <- function(child_data, adult_data, alpha_min = 0.001, alph
           weight = tipping_point,
           ess_treat = ess_results$drug_ess[tp_idx],
           ess_control = ess_results$placebo_ess[tp_idx],
-          ess_total = ess_results$ess_total[tp_idx],
-          borrowed_treat = ess_results$drug_borrowed[tp_idx],
-          borrowed_control = ess_results$placebo_borrowed[tp_idx]
+          ess_total = ess_results$ess_total[tp_idx]
         )
       )
     } else {
-      tipping_point_summary <- list(RR = list(weight = NA, ess_treat = NA, ess_control = NA, ess_total = NA, borrowed_treat = NA, borrowed_control = NA))
+      tipping_point_summary <- list(RR = list(weight = NA, ess_treat = NA, ess_control = NA, ess_total = NA))
     }
   } else {
-    tipping_point_summary <- list(RR = list(weight = NA, ess_treat = NA, ess_control = NA, ess_total = NA, borrowed_treat = NA, borrowed_control = NA))
+    tipping_point_summary <- list(RR = list(weight = NA, ess_treat = NA, ess_control = NA, ess_total = NA))
   }
   
   return(list(
@@ -316,7 +312,7 @@ power_prior_analysis <- function(child_data, adult_data, alpha_min = 0.001, alph
   ))
 }
 
-# 便捷的包装函数，用于Shiny应用中的参数控制 - 修复参数传递
+# 便捷的包装函数，用于Shiny应用中的参数控制
 run_power_prior_with_params <- function(child_data, adult_data, 
                                         alpha_min = 0.001, 
                                         alpha_max = 0.01, 
@@ -324,7 +320,7 @@ run_power_prior_with_params <- function(child_data, adult_data,
   return(run_power_prior_plot(child_data, adult_data, alpha_min, alpha_max, alpha_steps))
 }
 
-# 用于获取分析结果的包装函数 - 修复参数传递
+# 用于获取分析结果的包装函数
 get_power_prior_analysis <- function(child_data, adult_data,
                                      alpha_min = 0.001,
                                      alpha_max = 0.01,
