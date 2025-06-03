@@ -9,9 +9,9 @@ library(rjags)
 library(DT)  # 🔥 新增：用于数据表格
 
 # === Load analysis functions ===
-source(here::here("shiny_app", "mixture_analysis_function.R"))
-source(here::here("shiny_app", "hierarchical_tipping_function.R"))
-source(here::here("shiny_app", "power_prior_functions_new.R"))
+source(here::here("shiny_app", "mixture_analysis_function.R"), echo = TRUE, print.eval = TRUE)
+source(here::here("shiny_app", "hierarchical_tipping_function.R"), echo = TRUE, print.eval = TRUE)
+source(here::here("shiny_app", "power_prior_functions_new.R"), echo = TRUE, print.eval = TRUE)
 
 ui <- fluidPage(
   titlePanel("Pediatric Extrapolation with Bayesian Methods"),
@@ -50,6 +50,16 @@ ui <- fluidPage(
         helpText("Alpha represents the borrowing weight. Higher values mean more borrowing from adult data.")
       ),
       
+      conditionalPanel(
+        condition = "input.model_type == 'Bayesian Hierarchical Model'",
+        hr(),
+        h5("Prior Settings"),
+        numericInput("sigma_min", "Minimum Sigma", 1, min = 0, max = 50, step = 1),
+        numericInput("sigma_max", "Maximum Sigma", 2, min = 0, max = 1000000, step = 1),
+        numericInput("sigma_steps", "Number of Steps", 10, min = 1, max = 200, step = 1),
+        helpText("Sigma controls the borrowing level in the Bayesian hierarchical model. Higher sigma allows less borrowing from adult data.")
+      ),
+      
       actionButton("analyze", "Run Analysis")
     ),
     
@@ -61,7 +71,7 @@ ui <- fluidPage(
                    withSpinner(plotlyOutput("tippingPlot")),
                    # 添加 Error Bar 信息显示（只对 Power Prior 显示）
                    conditionalPanel(
-                     condition = "input.model_type == 'Power Prior'",
+                     condition = "input.model_type == 'Power Prior' ||  'Bayesian Hierarchical Model' || 'Mixture Prior'",
                      uiOutput("errorBarInfo")
                    ),
                    verbatimTextOutput("tippingConclusion"),
@@ -80,19 +90,71 @@ ui <- fluidPage(
                          tags$p(style = "margin-bottom: 0px; font-size: 13px; color: #6c757d;",
                                 "• Tipping point: minimum α where CI excludes 0")
                      )
+                   ),
+                   
+                   # 🔶 Hierarchical Model 说明框
+                   conditionalPanel(
+                     condition = "input.model_type == 'Bayesian Hierarchical Model'",
+                     div(style = "margin-top: 15px; padding: 10px; background-color: #e8f4f8; border-left: 4px solid #17a2b8; border-radius: 3px;",
+                         h5("💡 Bayesian Hierarchical Model Methodology", style = "color: #17a2b8; margin-bottom: 8px;"),
+                         tags$p(style = "margin-bottom: 5px; font-size: 14px;",
+                                strong("Model Formulation:")),
+                         tags$p(style = "margin-bottom: 5px; font-size: 13px; color: #6c757d;",
+                                HTML("yi ~ Binomial(pi, ni)")),
+                         tags$p(style = "margin-bottom: 5px; font-size: 13px; color: #6c757d;",
+                                HTML("logit(pi) = &alpha;<sub>trial[i]</sub> + &beta;<sub>trial[i]</sub> * group<sub>i</sub>")),
+                         tags$p(style = "margin-bottom: 5px; font-size: 13px; color: #6c757d;",
+                                HTML("&alpha;<sub>trial</sub> ~ N(&mu;<sub>&alpha;</sub>, &sigma;<sub>&alpha;</sub><sup>2</sup>), &beta;<sub>trial</sub> ~ N(&mu;<sub>&beta;</sub>, &sigma;<sub>&beta;</sub><sup>2</sup>)")),
+                         tags$p(style = "margin-bottom: 5px; font-size: 13px; color: #6c757d;",
+                                "• group_i = 1 for Drug A, 0 for Placebo"),
+                         tags$p(style = "margin-bottom: 5px; font-size: 13px; color: #6c757d;",
+                                "• trial[i] = 1 for adult, 2 for pediatric"),
+                         tags$p(style = "margin-bottom: 5px; font-size: 13px; color: #6c757d;",
+                                "• αtrial: baseline log-odds for each population"),
+                         tags$p(style = "margin-bottom: 5px; font-size: 13px; color: #6c757d;",
+                                "• βtrial: treatment effect (in log-odds) for each population"),
+                         tags$p(style = "margin-bottom: 0px; font-size: 13px; color: #6c757d;",
+                                "• Tipping point: minimum σ where CI excludes 1")
+                     )
+                   ),
+                   
+                   conditionalPanel(
+                     condition = "input.model_type == 'Mixture Prior'",
+                     div(
+                       style = "margin-top: 15px; padding: 10px; background-color: #e8f4f8; border-left: 4px solid #17a2b8; border-radius: 3px;",
+                       h5("💡 Mixture Prior Methodology", style = "color: #17a2b8; margin-bottom: 8px;"),
+                       tags$p(
+                         style = "margin-bottom: 5px; font-size: 14px;",
+                         strong("Prior ~ (1 - α) · Beta(1, 1) + α · Beta(y, n - y)")
+                       ),
+                       tags$p(
+                         style = "margin-bottom: 5px; font-size: 13px; color: #6c757d;",
+                         "• α (alpha): weight applied to adult study data"
+                       ),
+                       tags$p(
+                         style = "margin-bottom: 5px; font-size: 13px; color: #6c757d;",
+                         "• Beta(1, 1): skeptical prior; Beta(y, n - y): adult effect estimate distribution"
+                       ),
+                       tags$p(
+                         style = "margin-bottom: 5px; font-size: 13px; color: #6c757d;",
+                         "• Larger α → more borrowing from adult data"
+                       ),
+                       tags$p(
+                         style = "margin-bottom: 0px; font-size: 13px; color: #6c757d;",
+                         "• Tipping point: minimum α where CI excludes 0"
+                       )
+                     )
                    )
+                   
+                   
+                   
           ),
           tabPanel("📈 Results",
-                   # 🔥 修改：对Power Prior使用DT表格，其他使用普通表格
                    conditionalPanel(
-                     condition = "input.model_type == 'Power Prior'",
+                     condition = "input.model_type == 'Power Prior'|| input.model_type =='Mixture Prior' input.model_type == 'Bayesian Hierarchical Model'",
                      withSpinner(DT::dataTableOutput("essTableDetailed"))
                    ),
-                   conditionalPanel(
-                     condition = "input.model_type != 'Power Prior'",
-                     withSpinner(tableOutput("essTable"))
-                   ),
-                   uiOutput("essNote")
+          uiOutput("essNote")
           )
         )
       ),
@@ -108,7 +170,11 @@ ui <- fluidPage(
 
 server <- function(input, output, session) {
   
-  values <- reactiveValues(analysisDone = FALSE, showFisher = FALSE)
+  values <- reactiveValues(
+    analysisDone = FALSE, 
+    showFisher = FALSE
+    )
+  
   
   # 创建 reactive 表达式来存储 Power Prior 分析结果
   powerPriorResults <- eventReactive(input$analyze, {
@@ -171,13 +237,13 @@ server <- function(input, output, session) {
   mixturePriorResults <- eventReactive(input$analyze, {
     if (input$model_type == "Mixture Prior") {
       
-      # 参数校验
+      # Validate input parameters
       if (input$alpha_min >= input$alpha_max) {
         showNotification("Alpha minimum must be less than maximum", type = "error")
         return(NULL)
       }
       
-      # 构造数据列表
+      # Prepare data
       child_data <- list(
         treat = list(y = input$ped_treat_resp, n = input$ped_treat_total),
         control = list(y = input$ped_ctrl_resp, n = input$ped_ctrl_total)
@@ -187,23 +253,23 @@ server <- function(input, output, session) {
         control = list(y = input$adult_ctrl_resp, n = input$adult_ctrl_total)
       )
       
-      # 运行分析并显示进度
+      # Run analysis with progress
       withProgress(message = 'Running Mixture Prior Analysis...', value = 0, {
         incProgress(0.1, detail = "Initializing...")
         
-        # 调用你的 mixture 分析函数
-        analysis_results <- run_mixture_plot(
-          child_data,
-          adult_data,
+        # Run analysis
+        analysis_results <- mixture_analysis(
+          child_data = child_data,
+          adult_data = adult_data,
           alpha_min = input$alpha_min,
           alpha_max = input$alpha_max,
           alpha_steps = input$alpha_steps
         )
         
-        # 获取更详细结果
-        detailed_results <- get_mixture_analysis(
-          child_data,
-          adult_data,
+        # Get detailed results (using the same function in this case)
+        detailed_results <- mixture_analysis(
+          child_data = child_data,
+          adult_data = adult_data,
           alpha_min = input$alpha_min,
           alpha_max = input$alpha_max,
           alpha_steps = input$alpha_steps
@@ -221,7 +287,6 @@ server <- function(input, output, session) {
           alpha_steps = input$alpha_steps
         ))
       })
-      
     } else {
       return(NULL)
     }
@@ -244,13 +309,12 @@ server <- function(input, output, session) {
     
     if (input$model_type == "Mixture Prior") {
       
-      # 生成图表 - 基于 mixture 的 reactive 结果
+      # Generate plot
       output$tippingPlot <- renderPlotly({
         results <- mixturePriorResults()
         if (!is.null(results)) {
-          run_mixture_with_params(
-            results$child_data, 
-            results$adult_data,
+          plot_mixture_results(
+            results$analysis,
             results$alpha_min,
             results$alpha_max,
             results$alpha_steps
@@ -258,16 +322,16 @@ server <- function(input, output, session) {
         }
       })
       
-      # Error Bar 信息 - 基于 mixture 结果
+      # Error Bar info
       output$errorBarInfo <- renderUI({
         results <- mixturePriorResults()
         if (!is.null(results)) {
           analysis_results <- results$analysis
           combined_results <- analysis_results$results
-          combined_results$CI_Exclude_0 <- combined_results$lower_95_rr > 0
+          combined_results$Favorable <- combined_results$lower_95_rr > 0
           
           total_error_bars <- nrow(combined_results)
-          significant_error_bars <- sum(combined_results$CI_Exclude_0)
+          significant_error_bars <- sum(combined_results$Favorable)
           non_significant_error_bars <- total_error_bars - significant_error_bars
           
           HTML(paste0(
@@ -282,13 +346,13 @@ server <- function(input, output, session) {
         }
       })
       
-      # 生成结论 - 基于 mixture 结果
+      # Generate conclusion
       output$tippingConclusion <- renderText({
         results <- mixturePriorResults()
         if (!is.null(results)) {
-          tp <- results$detailed$tipping_point_summary$RR
+          tp <- results$analysis$tipping_point_summary$RR
           if (!is.null(tp) && !is.na(tp$weight)) {
-            paste0("Tipping Point Weight = ", tp$weight, "\n",
+            paste0("Tipping Point Weight = ", scales::percent(tp$weight, accuracy = 0.001), "\n",
                    "ESS (Drug) = ", round(tp$ess_treat, 1), ", ESS (Placebo) = ", round(tp$ess_control, 1))
           } else {
             "No tipping point found within the specified alpha range."
@@ -296,73 +360,67 @@ server <- function(input, output, session) {
         }
       })
       
-      # ESS 表格 - 基于 mixture 结果
-      output$essTable <- renderTable({
+      output$essTableDetailed <- DT::renderDataTable({
         results <- mixturePriorResults()
+        
         if (!is.null(results)) {
-          tp <- results$detailed$tipping_point_summary$RR
+          analysis_results <- results$analysis
+          display_data <- analysis_results$results %>%
+            dplyr::transmute(
+              `Weight (α)` = scales::percent(weight, accuracy = 0.001),
+              `CI Lower` = round(lower_95_rr, 3),
+              `CI Upper` = round(upper_95_rr, 3),
+              `Delta ESS Treatment` = round(ess_treat_rr, 1),
+              `Delta ESS Control` = round(ess_control_rr, 1)
+            )
           
-          if (!is.null(tp) && !is.na(tp$weight)) {
-            tibble::tibble(
-              Group = c("Treatment", "Control"),
-              `Delta ESS` = c(round(tp$ess_treat, 1), round(tp$ess_control, 1))
-            )
-          } else {
-            tibble::tibble(
-              Group = character(0), 
-              `Delta ESS` = numeric(0)
-            )
-          }
+          DT::datatable(
+            display_data,
+            options = list(
+              pageLength = 25,
+              scrollX = TRUE
+            ),
+            rownames = FALSE
+          )
+          
+        } else {
+          DT::datatable(
+            data.frame(Message = "Please run Mixture Prior analysis first"),
+            options = list(dom = 't'),
+            rownames = FALSE
+          )
         }
       })
       
-      # ESS 注释 - 基于 mixture 结果
+      
+      # Simplified note
       output$essNote <- renderUI({
         results <- mixturePriorResults()
         if (!is.null(results)) {
-          tp <- results$detailed$tipping_point_summary$RR
-          
+          tp <- results$analysis$tipping_point_summary$RR
           if (!is.null(tp) && !is.na(tp$weight)) {
-            HTML(paste0(
-              "<small><i>Tipping Point Weight = ", round(tp$weight, 3), "</i></small>"
-            ))
+            HTML(paste0("<small><i>Tipping Point Weight = ", scales::percent(tp$weight, accuracy = 0.001), "</i></small>"))
           } else {
-            HTML("<small><i>No tipping point found in Mixture Prior analysis.</i></small>")
+            HTML("<small><i>No tipping point found.</i></small>")
           }
         }
       })
-      
     }
     
     if (input$model_type == "Bayesian Hierarchical Model") {
       
-      ## === Step 1: Construct pediatric and adult data from user input ===
-      pediatric_clean <- data.frame(
-        Group = c("Placebo", "DrugA"),
-        n = c(input$ped_ctrl_resp, input$ped_treat_resp),
-        N = c(input$ped_ctrl_total, input$ped_treat_total),
-        Trial = "Pooled"
-      ) |> 
-        mutate(Source = "Pediatric")
-      
-      adult_clean <- data.frame(
-        Group = c("Placebo", "DrugA"),
-        n = c(input$adult_ctrl_resp, input$adult_treat_resp),
-        N = c(input$adult_ctrl_total, input$adult_treat_total),
-        Trial = "Pooled"
-      ) |> 
-        mutate(Source = "Adult")
-      
-      combined_data <- bind_rows(pediatric_clean, adult_clean) |>
-        mutate(
-          group = ifelse(Group == "DrugA", 1, 0),
-          trial_str = paste(Source, Trial),
-          trial = as.integer(factor(trial_str)),
-          y = n
-        )
-      
-      ## === Step 2: Bayesian model loop ===
-      tipping_results <- run_bayesian_tipping_analysis(combined_data)
+      sigma_grid <- seq(input$sigma_min, input$sigma_max, length.out = input$sigma_steps)
+      tipping_results <- run_bayesian_tipping_analysis(
+        ped_ctrl_resp = input$ped_ctrl_resp,
+        ped_ctrl_total = input$ped_ctrl_total,
+        ped_treat_resp = input$ped_treat_resp,
+        ped_treat_total = input$ped_treat_total,
+        adult_ctrl_resp = input$adult_ctrl_resp,
+        adult_ctrl_total = input$adult_ctrl_total,
+        adult_treat_resp = input$adult_treat_resp,
+        adult_treat_total = input$adult_treat_total,
+        sigma_values = sigma_grid
+      )
       
       ## === Step 3: 输出图与结论 ===
       tipping_results$Significant_FDA <- tipping_results$OR_lower > 1
@@ -380,70 +438,68 @@ server <- function(input, output, session) {
       })
       
       output$tippingPlot <- renderPlotly({
-        p <- ggplot(tipping_results, aes(
-          x = fixed_sigma_alpha,
-          y = OR_median,
-          color = Significant_FDA,
-          text = paste0(
-            "Sigma: ", round(fixed_sigma_alpha, 2), "<br>",
-            "OR: ", round(OR_median, 2), " [", round(OR_lower, 2), ", ", round(OR_upper, 2), "]<br>",
-            "Placebo ESS: ", round(ESS_FDA, 1), "<br>",
-            "Treatment ESS: ", round(ESS_FDA_trt, 1)
-          )
-        )) +
-          geom_point(size = 3) +
-          geom_errorbar(aes(ymin = OR_lower, ymax = OR_upper), width = 0.05) +
-          geom_hline(yintercept = 1, linetype = "dashed", color = "red") +
-          {if(nrow(tipping_row_fda) > 0) 
-            geom_vline(xintercept = tipping_row_fda$fixed_sigma_alpha, linetype = "dotted", color = "red")} +
-          {if(nrow(tipping_row_fda) > 0)
-            annotate("text",
-                     x = tipping_row_fda$fixed_sigma_alpha * 0.6,
-                     y = tipping_row_fda$OR_median + 80,
-                     label = paste0("Tipping Point = ", round(tipping_row_fda$fixed_sigma_alpha, 2)),
-                     hjust = 0, vjust = 0, size = 4.5, fontface = "italic", color = "red")} +
-          scale_color_manual(values = c("TRUE" = "darkgreen", "FALSE" = "gray")) +
-          scale_y_continuous(
-            trans = scales::log10_trans(),
-            breaks = c(1, 10, 50, 100)
-          ) +
-          labs(
-            title = "Pediatric OR vs Borrowing Strength (σ)",
-            x = "sigma alpha",
-            y = "Odds Ratio (DrugA vs Placebo)"
-          ) +
-          theme_minimal(base_size = 15)
+        p <- plot_hierarchical_tipping(tipping_results, tipping_row_fda)
         
         # 关键一步：转为交互图
         ggplotly(p, tooltip = "text")
       })
       
-      output$essTable <- renderTable({
-        if (nrow(tipping_row_fda) > 0) {
-          tipping_row <- tipping_results %>%
-            filter(Significant_FDA == TRUE) %>%
-            slice_min(ESS_FDA)
+      # error bar
+      output$errorBarInfo <- renderUI({
+        # 直接使用 tipping_results，因为它在外层已经跑过了
+        combined_results <- tipping_results
+        combined_results$CI_Exclude_0 <- combined_results$OR_lower > 1
+        
+        total_error_bars <- nrow(combined_results)
+        significant_error_bars <- sum(combined_results$CI_Exclude_0)
+        non_significant_error_bars <- total_error_bars - significant_error_bars
+        
+        HTML(paste0(
+          "<div style='background-color: #f8f9fa; border: 1px solid #dee2e6; border-radius: 5px; padding: 10px; margin: 10px 0;'>",
+          "<strong>📊 <span style='color:#007bff;'>Error Bar Statistics:</span></strong><br>",
+          "📈 Total Error Bars: <span style='color: #007bff;'><strong>", total_error_bars, "</strong></span><br>",
+          "✅ Significant (CI excludes 0): <span style='color: #28a745;'><strong>", significant_error_bars, "</strong></span><br>",
+          "❌ Non-significant (CI includes 0): <span style='color: #dc3545;'><strong>", non_significant_error_bars, "</strong></span><br>",
+          "🎯 Sigma Range: ", round(min(tipping_results$fixed_sigma_alpha), 3), " - ", round(max(tipping_results$fixed_sigma_alpha), 3),
+          "</div>"
+        ))
+      })
+      
+      
+      output$essTableDetailed <- DT::renderDataTable({
+        if (!is.null(tipping_results)) {
+          display_data <- tipping_results %>%
+            dplyr::select(
+              `Sigma (σ)` = fixed_sigma_alpha,
+              `CI Lower` = OR_lower,
+              `CI Upper` = OR_upper,
+              `ESS Treatment` = Borrowed_FDA_trt,
+              `ESS Control` = Borrowed_FDA
+            ) %>%
+            dplyr::mutate(
+              `CI Lower` = round(`CI Lower`, 3),
+              `CI Upper` = round(`CI Upper`, 3),
+              `ESS Treatment` = round(`ESS Treatment`, 1),
+              `ESS Control` = round(`ESS Control`, 1)
+            )
           
-          placebo_borrowed <- round(tipping_row$Borrowed_FDA, 1)
-          placebo_total <- round(tipping_row$ESS_FDA, 1)
-          
-          treatment_borrowed <- round(tipping_row$Borrowed_FDA_trt, 1)
-          treatment_total <- round(tipping_row$ESS_FDA_trt, 1)
-          
-          total_borrowed <- round(placebo_borrowed + treatment_borrowed, 1)
-          total_total <- round(placebo_total + treatment_total, 1)
-          
-          tibble::tibble(
-            Group = c("Placebo", "Treatment"),
-            `Delta ESS` = c(placebo_borrowed, treatment_borrowed)
+          datatable(
+            display_data,
+            options = list(
+              pageLength = 25,
+              scrollX = TRUE
+            ),
+            rownames = FALSE
           )
         } else {
-          tibble::tibble(
-            Group = character(0),
-            `Delta ESS` = numeric(0)
+          datatable(
+            data.frame(Message = "Please run Power Prior analysis first"),
+            options = list(dom = 't'),
+            rownames = FALSE
           )
         }
       })
+      
       output$essNote <- renderUI({
         if (nrow(tipping_row_fda) > 0) {
           tipping_row <- tipping_results %>%
@@ -485,10 +541,10 @@ server <- function(input, output, session) {
         if (!is.null(results)) {
           analysis_results <- results$analysis
           combined_results <- merge(analysis_results$results, analysis_results$ess_results, by = "alpha")
-          combined_results$CI_Exclude_0 <- combined_results$lower_ci > 0
+          combined_results$Favorable <- combined_results$lower_ci > 0
           
           total_error_bars <- nrow(combined_results)
-          significant_error_bars <- sum(combined_results$CI_Exclude_0)
+          significant_error_bars <- sum(combined_results$Favorable)
           non_significant_error_bars <- total_error_bars - significant_error_bars
           
           HTML(paste0(
@@ -524,14 +580,13 @@ server <- function(input, output, session) {
           analysis_results <- results$analysis
           combined_results <- merge(analysis_results$results, analysis_results$ess_results, by = "alpha")
           
-          # 选择重要列并重命名（使用正确的列名）
           display_data <- combined_results %>%
             dplyr::select(
               `Alpha (α)` = alpha,
               `CI Lower` = lower_ci,
               `CI Upper` = upper_ci,
-              `ESS Treatment` = drug_ess,  # 🔥 修正：使用 drug_ess 而不是 ess_treatment
-              `ESS Control` = placebo_ess   # 🔥 修正：使用 placebo_ess 而不是 ess_control
+              `ESS Treatment` = drug_ess,
+              `ESS Control` = placebo_ess
             ) %>%
             dplyr::mutate(
               `Alpha (α)` = scales::percent(`Alpha (α)`, accuracy = 0.001),
@@ -541,7 +596,6 @@ server <- function(input, output, session) {
               `ESS Control` = round(`ESS Control`, 1)
             )
           
-          # 创建数据表格
           datatable(
             display_data,
             options = list(
@@ -558,6 +612,7 @@ server <- function(input, output, session) {
           )
         }
       })
+      
       
       # 简化的注释
       output$essNote <- renderUI({
@@ -581,42 +636,48 @@ server <- function(input, output, session) {
     
   }) # end observeEvent for analyze
   
-  # Fisher's Exact Test 事件处理
+  # Fisher's Exact Test 事件处理 - 切换模式
   observeEvent(input$fisher, {
-    # 1. 构造2x2列联表
-    values$showFisher <- TRUE 
-    table_mat <- matrix(
-      c(
-        input$ped_treat_resp,
-        input$ped_treat_total - input$ped_treat_resp,
-        input$ped_ctrl_resp,
-        input$ped_ctrl_total - input$ped_ctrl_resp
-      ),
-      nrow = 2,
-      byrow = TRUE
-    )
-    rownames(table_mat) <- c("DrugA", "Placebo")
-    colnames(table_mat) <- c("Success", "Failure")
     
-    # 2. 执行Fisher's检验
-    fisher_res <- fisher.test(table_mat)
+    # 🔥 切换显示状态
+    values$showFisher <- !values$showFisher
     
-    # 3. 输出检验结果
-    output$fisherResult <- renderPrint({
-      cat("2x2 Table (Pediatric Data):\n\n")
-      print(table_mat)
-      cat("\nFisher's Exact Test Result:\n")
-      cat("P-value:", signif(fisher_res$p.value, 4), "\n")
-      cat("Odds Ratio:", signif(fisher_res$estimate, 4), "\n")
-      cat("95% CI:", paste0("(", signif(fisher_res$conf.int[1], 4), ", ", signif(fisher_res$conf.int[2], 4), ")"), "\n")
+    if (values$showFisher) {
+      # 只有在显示时才计算Fisher检验
+      # 1. 构造2x2列联表
+      table_mat <- matrix(
+        c(
+          input$ped_treat_resp,
+          input$ped_treat_total - input$ped_treat_resp,
+          input$ped_ctrl_resp,
+          input$ped_ctrl_total - input$ped_ctrl_resp
+        ),
+        nrow = 2,
+        byrow = TRUE
+      )
+      rownames(table_mat) <- c("DrugA", "Placebo")
+      colnames(table_mat) <- c("Success", "Failure")
       
-      # 判断显著性
-      if (fisher_res$p.value > 0.05 || (fisher_res$conf.int[1] < 1 && fisher_res$conf.int[2] > 1)) {
-        cat("→ Not statistically significant.\n")
-      } else {
-        cat("→ Statistically significant.\n")
-      }
-    })
+      # 2. 执行Fisher's检验
+      fisher_res <- fisher.test(table_mat)
+      
+      # 3. 输出检验结果
+      output$fisherResult <- renderPrint({
+        cat("2x2 Table (Pediatric Data):\n\n")
+        print(table_mat)
+        cat("\nFisher's Exact Test Result:\n")
+        cat("P-value:", signif(fisher_res$p.value, 4), "\n")
+        cat("Odds Ratio:", signif(fisher_res$estimate, 4), "\n")
+        cat("95% CI:", paste0("(", signif(fisher_res$conf.int[1], 4), ", ", signif(fisher_res$conf.int[2], 4), ")"), "\n")
+        
+        # 判断显著性
+        if (fisher_res$p.value > 0.05 || (fisher_res$conf.int[1] < 1 && fisher_res$conf.int[2] > 1)) {
+          cat("→ Not statistically significant.\n")
+        } else {
+          cat("→ Statistically significant.\n")
+        }
+      })
+    }
   })
   
   # Fisher面板显示控制
@@ -627,3 +688,5 @@ server <- function(input, output, session) {
 }
 
 shinyApp(ui = ui, server = server)
+
+
