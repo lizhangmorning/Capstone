@@ -183,7 +183,7 @@ run_mixture_plot <- function(child_data, adult_data,
   # Prepare data for plotting
   plot_data <- results %>%
     mutate(
-      CI_Exclude_0 = lower_95_rr > 0,
+      Favorable = lower_95_rr > 0,
       text = paste0(
         "α = ", round(weight, 4),
         "<br>ESS Trt: ", round(ess_treat_rr, 1),
@@ -198,7 +198,7 @@ run_mixture_plot <- function(child_data, adult_data,
   p <- ggplot(plot_data, aes(
     x = weight, 
     y = median_rr,
-    color = CI_Exclude_0,
+    color = Favorable,
     text = text
   )) +
     geom_point(size = 3) +
