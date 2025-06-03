@@ -151,14 +151,10 @@ ui <- fluidPage(
           ),
           tabPanel("📈 Results",
                    conditionalPanel(
-                     condition = "input.model_type == 'Power Prior'|| input.model_type =='Mixture Prior'",
+                     condition = "input.model_type == 'Power Prior'|| input.model_type =='Mixture Prior' input.model_type == 'Bayesian Hierarchical Model'",
                      withSpinner(DT::dataTableOutput("essTableDetailed"))
                    ),
-                   conditionalPanel(
-                     condition = "input.model_type = 'Bayesian Hierarchical Model'",
-                     withSpinner(tableOutput("essTable"))
-                   ),
-                   uiOutput("essNote")
+          uiOutput("essNote")
           )
         )
       ),
@@ -466,27 +462,36 @@ server <- function(input, output, session) {
       })
       
       
-      output$essTable <- renderTable({
-        if (nrow(tipping_results) > 0) {
-          
-          ess_table <- tipping_results %>%
-            mutate(
-              Sigma = fixed_sigma_alpha,
-              `CI Lower` = round(OR_lower, 3),
-              `CI Upper` = round(OR_upper, 3),
-              `ESS Treatment` = round(ESS_FDA_trt, 1),
-              `ESS Control` = round(ESS_FDA, 1)
+      output$essTableDetailed <- DT::renderDataTable({
+        if (!is.null(tipping_results)) {
+          display_data <- tipping_results %>%
+            dplyr::select(
+              `Sigma (σ)` = fixed_sigma_alpha,
+              `CI Lower` = OR_lower,
+              `CI Upper` = OR_upper,
+              `ESS Treatment` = Borrowed_FDA_trt,
+              `ESS Control` = Borrowed_FDA
             ) %>%
-            select(Sigma, `CI Lower`, `CI Upper`, `ESS Treatment`, `ESS Control`)
+            dplyr::mutate(
+              `CI Lower` = round(`CI Lower`, 3),
+              `CI Upper` = round(`CI Upper`, 3),
+              `ESS Treatment` = round(`ESS Treatment`, 1),
+              `ESS Control` = round(`ESS Control`, 1)
+            )
           
-          ess_table
+          datatable(
+            display_data,
+            options = list(
+              pageLength = 25,
+              scrollX = TRUE
+            ),
+            rownames = FALSE
+          )
         } else {
-          tibble::tibble(
-            Sigma = character(0),
-            `CI Lower` = numeric(0),
-            `CI Upper` = numeric(0),
-            `ESS Treatment` = numeric(0),
-            `ESS Control` = numeric(0)
+          datatable(
+            data.frame(Message = "Please run Power Prior analysis first"),
+            options = list(dom = 't'),
+            rownames = FALSE
           )
         }
       })
