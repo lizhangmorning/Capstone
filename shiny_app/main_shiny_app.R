@@ -71,7 +71,7 @@ ui <- fluidPage(
                    withSpinner(plotlyOutput("tippingPlot")),
                    # 添加 Error Bar 信息显示（只对 Power Prior 显示）
                    conditionalPanel(
-                     condition = "input.model_type == 'Power Prior'",
+                     condition = "input.model_type == 'Power Prior' ||  'Bayesian Hierarchical Model' || 'Mixture Prior'",
                      uiOutput("errorBarInfo")
                    ),
                    verbatimTextOutput("tippingConclusion"),
@@ -90,16 +90,44 @@ ui <- fluidPage(
                          tags$p(style = "margin-bottom: 0px; font-size: 13px; color: #6c757d;",
                                 "• Tipping point: minimum α where CI excludes 0")
                      )
+                   ),
+                   
+                   # 🔶 Hierarchical Model 说明框
+                   conditionalPanel(
+                     condition = "input.model_type == 'Bayesian Hierarchical Model'",
+                     div(style = "margin-top: 15px; padding: 10px; background-color: #e8f4f8; border-left: 4px solid #17a2b8; border-radius: 3px;",
+                         h5("💡 Bayesian Hierarchical Model Methodology", style = "color: #17a2b8; margin-bottom: 8px;"),
+                         tags$p(style = "margin-bottom: 5px; font-size: 14px;",
+                                strong("Model Formulation:")),
+                         tags$p(style = "margin-bottom: 5px; font-size: 13px; color: #6c757d;",
+                                HTML("yi ~ Binomial(pi, ni)")),
+                         tags$p(style = "margin-bottom: 5px; font-size: 13px; color: #6c757d;",
+                                HTML("logit(pi) = &alpha;<sub>trial[i]</sub> + &beta;<sub>trial[i]</sub> * group<sub>i</sub>")),
+                         tags$p(style = "margin-bottom: 5px; font-size: 13px; color: #6c757d;",
+                                HTML("&alpha;<sub>trial</sub> ~ N(&mu;<sub>&alpha;</sub>, &sigma;<sub>&alpha;</sub><sup>2</sup>), &beta;<sub>trial</sub> ~ N(&mu;<sub>&beta;</sub>, &sigma;<sub>&beta;</sub><sup>2</sup>)")),
+                         tags$p(style = "margin-bottom: 5px; font-size: 13px; color: #6c757d;",
+                                "• group_i = 1 for Drug A, 0 for Placebo"),
+                         tags$p(style = "margin-bottom: 5px; font-size: 13px; color: #6c757d;",
+                                "• trial[i] = 1 for adult, 2 for pediatric"),
+                         tags$p(style = "margin-bottom: 5px; font-size: 13px; color: #6c757d;",
+                                "• αtrial: baseline log-odds for each population"),
+                         tags$p(style = "margin-bottom: 5px; font-size: 13px; color: #6c757d;",
+                                "• βtrial: treatment effect (in log-odds) for each population"),
+                         tags$p(style = "margin-bottom: 0px; font-size: 13px; color: #6c757d;",
+                                "• Tipping point: minimum σ where CI excludes 1")
+                     )
                    )
+                   
+                   
           ),
           tabPanel("📈 Results",
                    # 🔥 修改：对Power Prior使用DT表格，其他使用普通表格
                    conditionalPanel(
-                     condition = "input.model_type == 'Power Prior'",
+                     condition = "input.model_type == 'Power Prior'|| 'Mixture Prior'",
                      withSpinner(DT::dataTableOutput("essTableDetailed"))
                    ),
                    conditionalPanel(
-                     condition = "input.model_type != 'Power Prior'",
+                     condition = "input.model_type != 'Power Prior'|| 'Bayesian Hierarchical Model' || 'Mixture Prior'",
                      withSpinner(tableOutput("essTable"))
                    ),
                    uiOutput("essNote")
@@ -382,32 +410,53 @@ server <- function(input, output, session) {
         ggplotly(p, tooltip = "text")
       })
       
+      # error bar
+      output$errorBarInfo <- renderUI({
+        # 直接使用 tipping_results，因为它在外层已经跑过了
+        combined_results <- tipping_results
+        combined_results$CI_Exclude_0 <- combined_results$OR_lower > 1
+        
+        total_error_bars <- nrow(combined_results)
+        significant_error_bars <- sum(combined_results$CI_Exclude_0)
+        non_significant_error_bars <- total_error_bars - significant_error_bars
+        
+        HTML(paste0(
+          "<div style='background-color: #f8f9fa; border: 1px solid #dee2e6; border-radius: 5px; padding: 10px; margin: 10px 0;'>",
+          "<strong>📊 <span style='color:#007bff;'>Error Bar Statistics:</span></strong><br>",
+          "📈 Total Error Bars: <span style='color: #007bff;'><strong>", total_error_bars, "</strong></span><br>",
+          "✅ Significant (CI excludes 0): <span style='color: #28a745;'><strong>", significant_error_bars, "</strong></span><br>",
+          "❌ Non-significant (CI includes 0): <span style='color: #dc3545;'><strong>", non_significant_error_bars, "</strong></span><br>",
+          "🎯 Sigma Range: ", round(min(tipping_results$fixed_sigma_alpha), 3), " - ", round(max(tipping_results$fixed_sigma_alpha), 3),
+          "</div>"
+        ))
+      })
+      
+      
       output$essTable <- renderTable({
-        if (nrow(tipping_row_fda) > 0) {
-          tipping_row <- tipping_results %>%
-            filter(Significant_FDA == TRUE) %>%
-            slice_min(ESS_FDA)
+        if (nrow(tipping_results) > 0) {
           
-          placebo_borrowed <- round(tipping_row$Borrowed_FDA, 1)
-          placebo_total <- round(tipping_row$ESS_FDA, 1)
+          ess_table <- tipping_results %>%
+            mutate(
+              Sigma = fixed_sigma_alpha,
+              `CI Lower` = round(OR_lower, 3),
+              `CI Upper` = round(OR_upper, 3),
+              `ESS Treatment` = round(ESS_FDA_trt, 1),
+              `ESS Control` = round(ESS_FDA, 1)
+            ) %>%
+            select(Sigma, `CI Lower`, `CI Upper`, `ESS Treatment`, `ESS Control`)
           
-          treatment_borrowed <- round(tipping_row$Borrowed_FDA_trt, 1)
-          treatment_total <- round(tipping_row$ESS_FDA_trt, 1)
-          
-          total_borrowed <- round(placebo_borrowed + treatment_borrowed, 1)
-          total_total <- round(placebo_total + treatment_total, 1)
-          
-          tibble::tibble(
-            Group = c("Placebo", "Treatment"),
-            `Delta ESS` = c(placebo_borrowed, treatment_borrowed)
-          )
+          ess_table
         } else {
           tibble::tibble(
-            Group = character(0),
-            `Delta ESS` = numeric(0)
+            Sigma = character(0),
+            `CI Lower` = numeric(0),
+            `CI Upper` = numeric(0),
+            `ESS Treatment` = numeric(0),
+            `ESS Control` = numeric(0)
           )
         }
       })
+      
       output$essNote <- renderUI({
         if (nrow(tipping_row_fda) > 0) {
           tipping_row <- tipping_results %>%
@@ -488,14 +537,13 @@ server <- function(input, output, session) {
           analysis_results <- results$analysis
           combined_results <- merge(analysis_results$results, analysis_results$ess_results, by = "alpha")
           
-          # 选择重要列并重命名（使用正确的列名）
           display_data <- combined_results %>%
             dplyr::select(
               `Alpha (α)` = alpha,
               `CI Lower` = lower_ci,
               `CI Upper` = upper_ci,
-              `ESS Treatment` = drug_ess,  # 🔥 修正：使用 drug_ess 而不是 ess_treatment
-              `ESS Control` = placebo_ess   # 🔥 修正：使用 placebo_ess 而不是 ess_control
+              `ESS Treatment` = drug_ess,
+              `ESS Control` = placebo_ess
             ) %>%
             dplyr::mutate(
               `Alpha (α)` = scales::percent(`Alpha (α)`, accuracy = 0.001),
@@ -505,7 +553,6 @@ server <- function(input, output, session) {
               `ESS Control` = round(`ESS Control`, 1)
             )
           
-          # 创建数据表格
           datatable(
             display_data,
             options = list(
@@ -522,6 +569,7 @@ server <- function(input, output, session) {
           )
         }
       })
+      
       
       # 简化的注释
       output$essNote <- renderUI({
