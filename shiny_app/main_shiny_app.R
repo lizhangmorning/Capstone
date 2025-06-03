@@ -40,9 +40,15 @@ ui <- fluidPage(
       selectInput("model_type", "Bayesian Analysis:",
                   choices = c("Mixture Prior", "Bayesian Hierarchical Model", "Power Prior")),
       
-      numericInput("alpha_min", "Minimum α (Prior Weight)", value = 0.001, min = 0, max = 1, step = 0.001),
-      numericInput("alpha_max", "Maximum α (Prior Weight)", value = 0.01, min = 0, max = 1, step = 0.001),
-      numericInput("alpha_steps", "Number of Steps", value = 50, min = 2, max = 500, step = 1),
+      conditionalPanel(
+        condition = "input.model_type == 'Power Prior'|| input.model_type == 'Mixture Prior'",
+        hr(),
+        h5("Prior Settings"),
+        numericInput("alpha_min", "Minimum Alpha", 0.001, min = 0, max = 1, step = 0.001),
+        numericInput("alpha_max", "Maximum Alpha", 0.01, min = 0, max = 1, step = 0.001),
+        numericInput("alpha_steps", "Number of Steps", 50, min = 10, max = 200),
+        helpText("Alpha represents the borrowing weight. Higher values mean more borrowing from adult data.")
+      ),
       
       actionButton("analyze", "Run Analysis")
     ),
@@ -257,7 +263,7 @@ server <- function(input, output, session) {
         if (!is.null(results)) {
           tp <- results$detailed$tipping_point_summary$RR
           if (!is.null(tp) && !is.na(tp$weight)) {
-            paste0("Tipping Point Weight = ", scales::percent(tp$weight, accuracy = 0.001), "\n",
+            paste0("Tipping Point Weight = ", tp$weight, "\n",
                    "ESS (Drug) = ", round(tp$ess_treat, 1), ", ESS (Placebo) = ", round(tp$ess_control, 1))
           } else {
             "No tipping point found within the specified alpha range."
