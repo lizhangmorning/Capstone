@@ -145,7 +145,7 @@ plot_hierarchical_tipping <- function(tipping_results, tipping_row_fda) {
   
   p <- ggplot(tipping_results, aes(
     x = fixed_sigma_alpha,
-    y = OR_median,
+    y = log(OR_median),
     color = Significant_FDA,
     text = paste0(
       "Sigma: ", round(fixed_sigma_alpha, 2), "<br>",
@@ -155,28 +155,25 @@ plot_hierarchical_tipping <- function(tipping_results, tipping_row_fda) {
     )
   )) +
     geom_point(size = 3) +
-    geom_errorbar(aes(ymin = OR_lower, ymax = OR_upper), width = 0.05) +
-    geom_hline(yintercept = 1, linetype = "dashed", color = "red") +
+    geom_errorbar(aes(ymin = log(OR_lower), ymax = log(OR_upper)), width = 0.05) +  # 同步 log
+    geom_hline(yintercept = 0, linetype = "dashed", color = "red") +                # log(1) = 0
     {if(nrow(tipping_row_fda) > 0) 
       geom_vline(xintercept = tipping_row_fda$fixed_sigma_alpha, linetype = "dotted", color = "red")} +
     {if(nrow(tipping_row_fda) > 0)
       annotate("text",
                x = tipping_row_fda$fixed_sigma_alpha * 0.6,
-               y = tipping_row_fda$OR_median + 80,
+               y = log(tipping_row_fda$OR_median) + 0.5,
                label = paste0("Tipping Point = ", round(tipping_row_fda$fixed_sigma_alpha, 2)),
                hjust = 0, vjust = 0, size = 4.5, fontface = "italic", color = "red")} +
-    scale_color_manual(values = c("TRUE" = "darkgreen", "FALSE" = "gray")) +
-    scale_y_continuous(
-      trans = scales::log10_trans(),
-      breaks = c(1, 10, 50, 100)
-    ) +
+    scale_color_manual(values = c("TRUE" = "darkgreen", "FALSE" = "gray"))+
     labs(
       title = "Treatment Effect with Hierarchical Model",
       x = "Sigma Alpha",
-      y = "Odds Ratio (DrugA vs Placebo)",
+      y = "log(Odds Ratio)",
       color = "CI Exclude 0" 
     ) +
     theme_minimal(base_size = 15)
+  
   
   return(p)
 }

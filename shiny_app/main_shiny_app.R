@@ -1,4 +1,3 @@
-
 library(shiny)
 library(plotly)
 library(here)
@@ -54,11 +53,11 @@ ui <- fluidPage(
       conditionalPanel(
         condition = "input.model_type == 'Bayesian Hierarchical Model'",
         hr(),
-        h5("Bayesian Hierarchical Settings"),
+        h5("Prior Settings"),
         numericInput("sigma_min", "Minimum Sigma", 1, min = 0, max = 50, step = 1),
         numericInput("sigma_max", "Maximum Sigma", 2, min = 0, max = 1000000, step = 1),
         numericInput("sigma_steps", "Number of Steps", 10, min = 1, max = 200, step = 1),
-        helpText("Sigma controls the borrowing level in the Bayesian hierarchical model. Higher sigma allows more borrowing from adult data.")
+        helpText("Sigma controls the borrowing level in the Bayesian hierarchical model. Higher sigma allows less borrowing from adult data.")
       ),
       
       actionButton("analyze", "Run Analysis")
