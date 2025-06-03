@@ -51,48 +51,45 @@ mixture_analysis <- function(child_data, adult_data, alpha_min = 0.001, alpha_ma
   var_p1_noborrow <- var(log(p1_noborrow / (1 - p1_noborrow)))
   var_p2_noborrow <- var(log(p2_noborrow / (1 - p2_noborrow)))
   
-  # Informative priors from adult data
-  prior_params <- list(
-    treat = list(a = adult_data$treat$y + 1, b = adult_data$treat$n - adult_data$treat$y + 1),
-    control = list(a = adult_data$control$y + 1, b = adult_data$control$n - adult_data$control$y + 1)
-  )
+  step_summary <- data.frame()  # New: to store step-by-step summary
   
   for (i in seq_along(weights)) {
     w <- weights[i]
     
+    # Mixture weights (k values)
     C_treat <- list(
-      info = exp(compute_C(prior_params$treat$a, prior_params$treat$b,
+      info = exp(compute_C(adult_data$treat$y + 1, adult_data$treat$n - adult_data$treat$y + 1,
                            child_data$treat$y, child_data$treat$n)),
-      flat = exp(compute_C(flat_prior$a, flat_prior$b,
-                           child_data$treat$y, child_data$treat$n))
+      flat = exp(compute_C(1, 1, child_data$treat$y, child_data$treat$n))
     )
     k_treat <- (w * C_treat$info) / (w * C_treat$info + (1 - w) * C_treat$flat)
     
     C_control <- list(
-      info = exp(compute_C(prior_params$control$a, prior_params$control$b,
+      info = exp(compute_C(adult_data$control$y + 1, adult_data$control$n - adult_data$control$y + 1,
                            child_data$control$y, child_data$control$n)),
-      flat = exp(compute_C(flat_prior$a, flat_prior$b,
-                           child_data$control$y, child_data$control$n))
+      flat = exp(compute_C(1, 1, child_data$control$y, child_data$control$n))
     )
     k_control <- (w * C_control$info) / (w * C_control$info + (1 - w) * C_control$flat)
     
     post_p1 <- ifelse(
       runif(1e5) < k_treat,
-      rbeta(1e5, prior_params$treat$a + child_data$treat$y,
-            prior_params$treat$b + child_data$treat$n - child_data$treat$y),
-      rbeta(1e5, flat_prior$a + child_data$treat$y,
-            flat_prior$b + child_data$treat$n - child_data$treat$y)
+      rbeta(1e5, adult_data$treat$y + 1 + child_data$treat$y,
+            adult_data$treat$n - adult_data$treat$y + 1 + child_data$treat$n - child_data$treat$y),
+      rbeta(1e5, 1 + child_data$treat$y,
+            1 + child_data$treat$n - child_data$treat$y)
     )
+    
     post_p2 <- ifelse(
       runif(1e5) < k_control,
-      rbeta(1e5, prior_params$control$a + child_data$control$y,
-            prior_params$control$b + child_data$control$n - child_data$control$y),
-      rbeta(1e5, flat_prior$a + child_data$control$y,
-            flat_prior$b + child_data$control$n - child_data$control$y)
+      rbeta(1e5, adult_data$control$y + 1 + child_data$control$y,
+            adult_data$control$n - adult_data$control$y + 1 + child_data$control$n - child_data$control$y),
+      rbeta(1e5, 1 + child_data$control$y,
+            1 + child_data$control$n - child_data$control$y)
     )
     
     or_post <- (post_p1 / (1 - post_p1)) / (post_p2 / (1 - post_p2))
     rr_post <- post_p1 - post_p2
+    
     log_or_var <- var(log(or_post))
     var_rr <- var(rr_post)
     
@@ -104,6 +101,7 @@ mixture_analysis <- function(child_data, adult_data, alpha_min = 0.001, alpha_ma
     ess_treat_rr <- (var(p1_noborrow) / var(post_p1) - 1) * child_data$treat$n
     ess_control_rr <- (var(p2_noborrow) / var(post_p2) - 1) * child_data$control$n
     
+    # Store results
     results[i, ] <- list(
       w,
       median(or_post),
@@ -121,27 +119,27 @@ mixture_analysis <- function(child_data, adult_data, alpha_min = 0.001, alpha_ma
       k_treat,
       k_control
     )
+    
+    # New: store step summary
+    step_summary <- rbind(step_summary, data.frame(
+      weight = w,
+      median_rr = median(rr_post),
+      lower_95 = quantile(rr_post, 0.025),
+      upper_95 = quantile(rr_post, 0.975),
+      Favorable = quantile(rr_post, 0.025) > 0,
+      delta_rr = median(rr_post),
+      ess_treat_rr = ess_treat_rr,
+      ess_control_rr = ess_control_rr,
+      ess_total_rr = ess_total_rr,
+      k_treat = k_treat,
+      k_control = k_control
+    ))
   }
   
   # Find tipping points
-  or_tip_idx <- which(results$lower_95_or > 1)[1]
   rr_tip_idx <- which(results$lower_95_rr > 0)[1]
   
   tipping_point_summary <- list(
-    OR = if (!is.na(or_tip_idx)) {
-      or_row <- results[or_tip_idx, ]
-      list(
-        weight = or_row$weight,
-        ess_treat = or_row$ess_treat_or,
-        ess_control = or_row$ess_control_or,
-        ess_total = or_row$ess_total_or,
-        lower_95 = or_row$lower_95_or,
-        upper_95 = or_row$upper_95_or
-      )
-    } else {
-      list(weight = NA_real_, ess_treat = NA_real_, ess_control = NA_real_, ess_total = NA_real_, 
-           lower_95 = NA_real_, upper_95 = NA_real_)
-    },
     RR = if (!is.na(rr_tip_idx)) {
       rr_row <- results[rr_tip_idx, ]
       list(
@@ -158,29 +156,21 @@ mixture_analysis <- function(child_data, adult_data, alpha_min = 0.001, alpha_ma
     }
   )
   
-  
   return(list(
     results = results,
-    ess_results = results,  # For compatibility with power prior functions
+    ess_results = results,  # for compatibility
+    step_summary = step_summary,  # ✅ key addition
     tipping_point = tipping_point_summary$RR$weight,
     tipping_point_summary = tipping_point_summary
   ))
 }
 
+
 # Plotting function with step size control
-run_mixture_plot <- function(child_data, adult_data, 
-                             alpha_min = 0.001, 
-                             alpha_max = 0.01, 
-                             alpha_steps = 50) {
-  
-  # Run analysis with specified parameters
-  analysis_results <- mixture_analysis(child_data, adult_data, 
-                                       alpha_min, alpha_max, alpha_steps)
-  
+plot_mixture_results <- function(analysis_results, alpha_min, alpha_max, alpha_steps) {
   results <- analysis_results$results
   tipping_point <- analysis_results$tipping_point
   
-  # Prepare data for plotting
   plot_data <- results %>%
     mutate(
       Favorable = lower_95_rr > 0,
@@ -194,7 +184,6 @@ run_mixture_plot <- function(child_data, adult_data,
   
   error_bar_width <- (alpha_max - alpha_min) / alpha_steps
   
-  # Create ggplot
   p <- ggplot(plot_data, aes(
     x = weight, 
     y = median_rr,
@@ -213,7 +202,6 @@ run_mixture_plot <- function(child_data, adult_data,
     theme_minimal(base_size = 15) +
     scale_x_continuous(labels = scales::percent_format(accuracy = 0.1))
   
-  # Add tipping point annotation if it exists
   if (!is.na(tipping_point)) {
     tipping_row <- plot_data[which.min(abs(plot_data$weight - tipping_point)), ]
     p <- p +
@@ -225,28 +213,5 @@ run_mixture_plot <- function(child_data, adult_data,
                hjust = 0, vjust = 0, size = 4.5, fontface = "italic", color = "red")
   }
   
-  # Return plotly object
   ggplotly(p, tooltip = "text")
-}
-
-# Wrapper function for analysis results
-get_mixture_analysis <- function(child_data, adult_data,
-                                 alpha_min = 0.001,
-                                 alpha_max = 0.01,
-                                 alpha_steps = 50) {
-  analysis_results <- mixture_analysis(child_data, adult_data, 
-                                       alpha_min, alpha_max, alpha_steps)
-  
-  return(list(
-    tipping_point_summary = analysis_results$tipping_point_summary,
-    full_results = analysis_results
-  ))
-}
-
-# Convenience wrapper function for Shiny app
-run_mixture_with_params <- function(child_data, adult_data, 
-                                    alpha_min = 0.001, 
-                                    alpha_max = 0.01, 
-                                    alpha_steps = 50) {
-  return(run_mixture_plot(child_data, adult_data, alpha_min, alpha_max, alpha_steps))
 }
