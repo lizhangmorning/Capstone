@@ -1,5 +1,4 @@
 # ===== Power Prior Analysis Functions =====
-# 这个文件包含了Power Prior分析的封装函数，可以直接整合到主Shiny应用中
 
 library(rjags)
 library(coda)
@@ -7,9 +6,7 @@ library(dplyr)
 library(ggplot2)
 library(scales)
 
-# PowerPrior核心函数
 power_prior_rjags <- function(ped_data, adult_data, alpha, n_iter = 10000) {
-  # 定义JAGS模型
   model_string <- "
   model {
     # Likelihood for pediatric data
@@ -32,7 +29,6 @@ power_prior_rjags <- function(ped_data, adult_data, alpha, n_iter = 10000) {
   }
   "
   
-  # 准备JAGS数据
   jags_data <- list(
     y_ped_placebo = ped_data$y_placebo,
     n_ped_placebo = ped_data$n_placebo,
@@ -44,23 +40,22 @@ power_prior_rjags <- function(ped_data, adult_data, alpha, n_iter = 10000) {
     n_adult_drug = adult_data$n_drug,
     alpha = alpha
   )
-  
-  # 初始化JAGS模型
+
   jags_model <- jags.model(textConnection(model_string), 
                            data = jags_data, 
                            n.chains = 3, 
                            quiet = TRUE)
   
-  # 预热
+
   update(jags_model, 5000, progress.bar = "none")
   
-  # 抽取后验样本
+
   samples <- coda.samples(jags_model, 
                           variable.names = c("p_placebo", "p_drug", "rr_diff"), 
                           n.iter = n_iter, 
                           progress.bar = "none")
   
-  # 转换为矩阵处理
+
   samples_matrix <- as.matrix(samples)
   
   rr_diff <- samples_matrix[, "rr_diff"]
@@ -80,11 +75,11 @@ power_prior_rjags <- function(ped_data, adult_data, alpha, n_iter = 10000) {
   ))
 }
 
-# 计算基于方差的ESS
+
 calculate_ess_from_variance_rjags <- function(ped_data, adult_data, alpha_seq, n_samples = 10000) {
   ess_results <- data.frame(alpha = alpha_seq)
   
-  # 计算无借用时的后验方差
+
   no_borrow_res <- power_prior_rjags(ped_data, adult_data, 0)
   
   V1_placebo <- var(no_borrow_res$samples_placebo)
@@ -105,7 +100,7 @@ calculate_ess_from_variance_rjags <- function(ped_data, adult_data, alpha_seq, n
   for (i in 1:length(alpha_seq)) {
     alpha <- alpha_seq[i]
     
-    # 运行RJAGS模型
+
     borrow_res <- power_prior_rjags(ped_data, adult_data, alpha)
     
     V2_placebo <- var(borrow_res$samples_placebo)
@@ -116,12 +111,12 @@ calculate_ess_from_variance_rjags <- function(ped_data, adult_data, alpha_seq, n
     variance_ratio_drug <- V1_drug / V2_drug
     variance_ratio_diff <- V1_diff / V2_diff
     
-    # 计算ESS
+
     n_placebo <- ped_data$n_placebo
     n_drug <- ped_data$n_drug
     n_total <- n_placebo + n_drug
     
-    # 计算借用的样本量
+
     placebo_ess <- n_placebo * (variance_ratio_placebo - 1)
     drug_ess <- n_drug * (variance_ratio_drug - 1)
     total_ess <- n_total * (variance_ratio_diff - 1)
@@ -167,16 +162,16 @@ calculate_ess_from_variance_rjags <- function(ped_data, adult_data, alpha_seq, n
   return(ess_results)
 }
 
-# 查找临界点
+
 find_tipping_point <- function(results) {
   tp_idx <- which(results$lower_ci > 0)[1]
   tipping_point <- ifelse(is.na(tp_idx), NA, results$alpha[tp_idx])
   return(tipping_point)
 }
 
-# PowerPrior临界点分析主函数
+
 run_power_prior_analysis <- function(child_data, adult_data, alpha_min = 0.001, alpha_max = 0.01, alpha_steps = 50) {
-  # 转换数据格式以匹配原始函数
+
   ped_data <- list(
     y_placebo = child_data$control$y,
     n_placebo = child_data$control$n,
@@ -221,23 +216,20 @@ run_power_prior_plot <- function(child_data, adult_data, alpha_min = 0.001, alph
   library(ggplot2)
   library(plotly)
   
-  # 运行分析，传递用户自定义的参数
+
   analysis_results <- run_power_prior_analysis(child_data, adult_data, alpha_min, alpha_max, steps)
   
   results <- analysis_results$results
   ess_results <- analysis_results$ess_results
   tipping_point <- analysis_results$tipping_point
   
-  # 合并结果和ESS数据
+
   combined_results <- merge(results, ess_results, by = "alpha")
   
-  # 添加CI exclude 0的判断标准
   combined_results$Favorable <- combined_results$lower_ci > 0
   
-  # 计算误差线宽度
   error_bar_width <- (max(combined_results$alpha) - min(combined_results$alpha)) / nrow(combined_results) 
   
-  # 创建ggplot对象
   p <- ggplot(combined_results, aes(
     x = alpha, 
     y = median_rr_diff,
@@ -261,7 +253,7 @@ run_power_prior_plot <- function(child_data, adult_data, alpha_min = 0.001, alph
     theme_minimal(base_size = 15) +
     scale_x_continuous(labels = scales::percent_format(accuracy = 0.1))
   
-  # 添加 tipping point 图层（如果存在）
+
   if (!is.na(tipping_point)) {
     tipping_row <- combined_results[which.min(abs(combined_results$alpha - tipping_point)), ]
     p <- p +
@@ -273,21 +265,21 @@ run_power_prior_plot <- function(child_data, adult_data, alpha_min = 0.001, alph
                hjust = 0, vjust = 0, size = 4.5, fontface = "italic", color = "red")
   }
   
-  # 返回plotly对象
+
   ggplotly(p, tooltip = "text")
 }
 
-# Power Prior分析函数 - 返回摘要信息
+
 power_prior_analysis <- function(child_data, adult_data, alpha_min = 0.001, alpha_max = 0.01, alpha_steps = 50) {
-  # 运行分析，传递用户自定义的参数
+
   analysis_results <- run_power_prior_analysis(child_data, adult_data, alpha_min, alpha_max, alpha_steps)
   
   tipping_point <- analysis_results$tipping_point
   ess_results <- analysis_results$ess_results
   
-  # 构建tipping point摘要
+
   if (!is.na(tipping_point)) {
-    # 找到tipping point对应的ESS
+
     tp_idx <- which(abs(ess_results$alpha - tipping_point) == min(abs(ess_results$alpha - tipping_point)))
     
     if (length(tp_idx) > 0) {
@@ -312,7 +304,7 @@ power_prior_analysis <- function(child_data, adult_data, alpha_min = 0.001, alph
   ))
 }
 
-# 便捷的包装函数，用于Shiny应用中的参数控制
+
 run_power_prior_with_params <- function(child_data, adult_data, 
                                         alpha_min = 0.001, 
                                         alpha_max = 0.01, 
@@ -320,7 +312,7 @@ run_power_prior_with_params <- function(child_data, adult_data,
   return(run_power_prior_plot(child_data, adult_data, alpha_min, alpha_max, alpha_steps))
 }
 
-# 用于获取分析结果的包装函数
+
 get_power_prior_analysis <- function(child_data, adult_data,
                                      alpha_min = 0.001,
                                      alpha_max = 0.01,

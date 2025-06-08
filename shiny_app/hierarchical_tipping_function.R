@@ -53,7 +53,6 @@ run_bayesian_tipping_analysis <- function(
     V2_trt = numeric()
   )
   
-  ### 加入进度条
   withProgress(message = 'Running Bayesian Hierarchical Model...', value = 0, {
     
     total_steps <- length(sigma_values)
@@ -61,7 +60,6 @@ run_bayesian_tipping_analysis <- function(
     for (i in seq_along(sigma_values)) {
       s <- sigma_values[i]
       
-      # 每一轮更新进度
       incProgress(1 / total_steps)
       
       jags_data <- list(
@@ -134,7 +132,7 @@ run_bayesian_tipping_analysis <- function(
         V2_trt = V2_trt
       ))
     }
-  })  # <- 进度条括号结束
+  })
   
   return(tipping_results)
 }
@@ -155,8 +153,8 @@ plot_hierarchical_tipping <- function(tipping_results, tipping_row_fda) {
     )
   )) +
     geom_point(size = 3) +
-    geom_errorbar(aes(ymin = log(OR_lower), ymax = log(OR_upper)), width = 0.05) +  # 同步 log
-    geom_hline(yintercept = 0, linetype = "dashed", color = "red") +                # log(1) = 0
+    geom_errorbar(aes(ymin = log(OR_lower), ymax = log(OR_upper)), width = 0.05) +
+    geom_hline(yintercept = 0, linetype = "dashed", color = "red") + 
     {if(nrow(tipping_row_fda) > 0) 
       geom_vline(xintercept = tipping_row_fda$fixed_sigma_alpha, linetype = "dotted", color = "red")} +
     {if(nrow(tipping_row_fda) > 0)

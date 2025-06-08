@@ -6,7 +6,7 @@ library(dplyr)
 library(tidyr)
 library(shinycssloaders)
 library(rjags)
-library(DT)  # 🔥 新增：用于数据表格
+library(DT) 
 
 # === Load analysis functions ===
 source(here::here("shiny_app", "mixture_analysis_function.R"), echo = TRUE, print.eval = TRUE)
@@ -69,14 +69,13 @@ ui <- fluidPage(
         tabsetPanel(
           tabPanel("📊 Tipping Point Plot",
                    withSpinner(plotlyOutput("tippingPlot")),
-                   # 添加 Error Bar 信息显示（只对 Power Prior 显示）
                    conditionalPanel(
                      condition = "input.model_type == 'Power Prior' ||  'Bayesian Hierarchical Model' || 'Mixture Prior'",
                      uiOutput("errorBarInfo")
                    ),
                    verbatimTextOutput("tippingConclusion"),
                    
-                   # 🔥 添加Power Prior解释框
+                   # add conditional panels for each model type
                    conditionalPanel(
                      condition = "input.model_type == 'Power Prior'",
                      div(style = "margin-top: 15px; padding: 10px; background-color: #e8f4f8; border-left: 4px solid #17a2b8; border-radius: 3px;",
@@ -92,7 +91,6 @@ ui <- fluidPage(
                      )
                    ),
                    
-                   # 🔶 Hierarchical Model 说明框
                    conditionalPanel(
                      condition = "input.model_type == 'Bayesian Hierarchical Model'",
                      div(style = "margin-top: 15px; padding: 10px; background-color: #e8f4f8; border-left: 4px solid #17a2b8; border-radius: 3px;",
@@ -176,11 +174,10 @@ server <- function(input, output, session) {
     )
   
   
-  # 创建 reactive 表达式来存储 Power Prior 分析结果
+  # create reactive values for analysis results
   powerPriorResults <- eventReactive(input$analyze, {
     if (input$model_type == "Power Prior") {
       
-      # 验证输入参数
       if (input$alpha_min >= input$alpha_max) {
         showNotification("Alpha minimum must be less than maximum", type = "error")
         return(NULL)
@@ -195,11 +192,9 @@ server <- function(input, output, session) {
         control = list(y = input$adult_ctrl_resp, n = input$adult_ctrl_total)
       )
       
-      # 运行分析
       withProgress(message = 'Running Power Prior Analysis...', value = 0, {
         incProgress(0.1, detail = "Initializing...")
         
-        # 运行分析
         analysis_results <- run_power_prior_analysis(
           child_data, 
           adult_data, 
@@ -208,7 +203,6 @@ server <- function(input, output, session) {
           input$alpha_steps
         )
         
-        # 获取详细分析结果
         detailed_results <- get_power_prior_analysis(
           child_data, 
           adult_data,
@@ -296,7 +290,7 @@ server <- function(input, output, session) {
   observeEvent(input$analyze, {
     
     values$analysisDone <- TRUE
-    values$showFisher <- FALSE  # 运行分析时隐藏Fisher结果
+    values$showFisher <- FALSE
     
     child_data <- list(
       treat = list(y = input$ped_treat_resp, n = input$ped_treat_total),
@@ -422,7 +416,7 @@ server <- function(input, output, session) {
         sigma_values = sigma_grid
       )
       
-      ## === Step 3: 输出图与结论 ===
+      ## === output ===
       tipping_results$Significant_FDA <- tipping_results$OR_lower > 1
       tipping_row_fda <- tipping_results |>
         filter(Significant_FDA == TRUE) |>
@@ -440,13 +434,12 @@ server <- function(input, output, session) {
       output$tippingPlot <- renderPlotly({
         p <- plot_hierarchical_tipping(tipping_results, tipping_row_fda)
         
-        # 关键一步：转为交互图
         ggplotly(p, tooltip = "text")
       })
       
       # error bar
       output$errorBarInfo <- renderUI({
-        # 直接使用 tipping_results，因为它在外层已经跑过了
+
         combined_results <- tipping_results
         combined_results$CI_Exclude_0 <- combined_results$OR_lower > 1
         
@@ -518,10 +511,9 @@ server <- function(input, output, session) {
       
     }
     
-    # 🔥 简化的Power Prior分析
     if (input$model_type == "Power Prior") {
       
-      # 生成图表
+
       output$tippingPlot <- renderPlotly({
         results <- powerPriorResults()
         if (!is.null(results)) {
@@ -535,7 +527,7 @@ server <- function(input, output, session) {
         }
       })
       
-      # Error Bar 信息
+
       output$errorBarInfo <- renderUI({
         results <- powerPriorResults()
         if (!is.null(results)) {
@@ -559,7 +551,7 @@ server <- function(input, output, session) {
         }
       })
       
-      # 生成结论
+
       output$tippingConclusion <- renderText({
         results <- powerPriorResults()
         if (!is.null(results)) {
@@ -573,7 +565,6 @@ server <- function(input, output, session) {
         }
       })
       
-      # 🔥 根据实际列名显示重要数据，保留三位小数
       output$essTableDetailed <- DT::renderDataTable({
         results <- powerPriorResults()
         if (!is.null(results)) {
@@ -614,7 +605,6 @@ server <- function(input, output, session) {
       })
       
       
-      # 简化的注释
       output$essNote <- renderUI({
         results <- powerPriorResults()
         if (!is.null(results)) {
@@ -628,7 +618,7 @@ server <- function(input, output, session) {
       })
     }
     
-    # 输出控制
+
     output$analysisVisible <- reactive({
       values$analysisDone
     })
@@ -636,16 +626,16 @@ server <- function(input, output, session) {
     
   }) # end observeEvent for analyze
   
-  # Fisher's Exact Test 事件处理 - 切换模式
+
   observeEvent(input$fisher, {
     
-    # 🔥 切换显示状态
-    values$showFisher <- TRUE  # 运行分析时隐藏Fisher结果
+
+    values$showFisher <- TRUE  
     values$analysisDone <- FALSE
     
     if (values$showFisher) {
-      # 只有在显示时才计算Fisher检验
-      # 1. 构造2x2列联表
+
+      # 1. create 2*2 table
       table_mat <- matrix(
         c(
           input$ped_treat_resp,
@@ -659,10 +649,10 @@ server <- function(input, output, session) {
       rownames(table_mat) <- c("DrugA", "Placebo")
       colnames(table_mat) <- c("Success", "Failure")
       
-      # 2. 执行Fisher's检验
+      # 2. run Fisher's Exact Test
       fisher_res <- fisher.test(table_mat)
       
-      # 3. 输出检验结果
+      # 3. render output
       output$fisherResult <- renderPrint({
         cat("2x2 Table (Pediatric Data):\n\n")
         print(table_mat)
@@ -671,7 +661,6 @@ server <- function(input, output, session) {
         cat("Odds Ratio:", signif(fisher_res$estimate, 4), "\n")
         cat("95% CI:", paste0("(", signif(fisher_res$conf.int[1], 4), ", ", signif(fisher_res$conf.int[2], 4), ")"), "\n")
         
-        # 判断显著性
         if (fisher_res$p.value > 0.05 || (fisher_res$conf.int[1] < 1 && fisher_res$conf.int[2] > 1)) {
           cat("→ Not statistically significant.\n")
         } else {
@@ -679,7 +668,7 @@ server <- function(input, output, session) {
         }
       })
     }
-    # 显示Fisher面板
+ 
     output$showFisherPanel <- reactive({
       values$showFisher
     })
