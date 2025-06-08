@@ -1,13 +1,14 @@
-Running the Application
+# Run the Application
 
 1. Clone this repository:
-
-bashgit clone https://github.com/yourusername/your-repository-name.git
-cd your-repository-name
-
+```bash
+git clone https://github.com/lizhangmorning/Capstone.git
+cd Capstone
+```
 2. Open R/RStudio and set your working directory to the project folder
-3. Run the main application:
-
+3. Run the application by executing:
+```r
 source("main_shiny_app.R")
-
+```
 The Shiny app will launch in your default web browser.
+
